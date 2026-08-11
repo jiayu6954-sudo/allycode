@@ -58,7 +58,7 @@
     "url": "https://github.com/jiayu6954-sudo/allycode/issues"
   },
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.13.0"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

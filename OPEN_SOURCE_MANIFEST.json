@@ -2,7 +2,7 @@
   "name": "AllyCode",
   "version": "0.10.0-alpha.8",
   "license": "MIT",
-  "generatedAt": "2026-08-11T17:39:03.601Z",
+  "generatedAt": "2026-08-11T17:46:43.072Z",
   "fileCount": 134,
   "files": [
     {
@@ -32,8 +32,8 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "bytes": 900,
-      "sha256": "28b42b34ee27765c2fe3fa57cf73379fd661ac3cdcc7586a85cd621ea17da718"
+      "bytes": 931,
+      "sha256": "35f96942d89be2667c5a2cb73bf2c1e039bb20928c7c50e24e45d2defc0678d2"
     },
     {
       "path": ".gitignore",
@@ -52,8 +52,8 @@
     },
     {
       "path": "CONTRIBUTING.md",
-      "bytes": 2343,
-      "sha256": "e285de474284df070b5502b5c629135344b4afa0a70934e14f6e5a42ac31c9b6"
+      "bytes": 2344,
+      "sha256": "758cac351af8949992ba6f6647e84e6b1599156f039e223eea69906c049e13cc"
     },
     {
       "path": "desktop/agent-service.ts",
@@ -177,18 +177,18 @@
     },
     {
       "path": "package-lock.json",
-      "bytes": 322522,
-      "sha256": "43d4542ebca7b742d838e006dbfded4c99a4186a5335c697692677fbcef4e2b2"
+      "bytes": 322523,
+      "sha256": "40f966287e4eac2de5dde23b20104c54816145d92cd0c7127ae11bde8174d4da"
     },
     {
       "path": "package.json",
-      "bytes": 3896,
-      "sha256": "21f743297104d868467ad9c595c4ad0542b50f0f58e7de58baed1d7b2a54322e"
+      "bytes": 3897,
+      "sha256": "2a79bf9d73767e93f7aa6f82ee8e9e4a3561380ce26a1b62333565b7b5dfd84d"
     },
     {
       "path": "README.md",
-      "bytes": 7578,
-      "sha256": "0acc33fc50d41347cd94083902526f56e986213fb4fbbfb89e0b8030953e1c86"
+      "bytes": 7581,
+      "sha256": "adfe9c9c3d954df1cf8196c7ca5cc7824106e3bc6f21216f60f0e41f6a8f9ca9"
     },
     {
       "path": "scripts/add-shebang.mjs",

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jiayu6954-sudo/allycode/actions/workflows/ci.yml/badge.svg)](https://github.com/jiayu6954-sudo/allycode/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-black.svg)](LICENSE)
-[![Node.js 22.5+](https://img.shields.io/badge/Node.js-22.5%2B-black.svg)](package.json)
+[![Node.js 22.13+](https://img.shields.io/badge/Node.js-22.13%2B-black.svg)](package.json)
 
 AllyCode is a TypeScript AI coding assistant with both a terminal interface and an Electron desktop application. It supports multiple model providers, tool permissions, project-scoped file operations, MCP servers, long-term memory, research tasks, and an optional Docker shell sandbox.
 
@@ -25,7 +25,7 @@ Current version: `0.10.0-alpha.8`
 
 ## Requirements
 
-- Node.js 22.5 or newer for the CLI. The packaged desktop application includes its own compatible runtime.
+- Node.js 22.13 or newer for the CLI. The packaged desktop application includes its own compatible runtime.
 - Docker Desktop only when the optional shell sandbox is enabled.
 - An API key for the selected cloud provider, or a running local model service.
 

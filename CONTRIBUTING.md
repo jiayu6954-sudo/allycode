@@ -16,7 +16,7 @@ tests, documentation, provider compatibility work, and security improvements.
 
 Requirements:
 
-- Node.js 22.5 or newer;
+- Node.js 22.13 or newer;
 - npm 10 or newer;
 - Windows, macOS, or Linux for CLI development;
 - Windows for producing the currently supported desktop installer;
