@@ -1,0 +1,69 @@
+# ── Video files — upload via GitHub Issue drag-and-drop instead ──────────────
+# Embed the resulting CDN URL (github.com/user/repo/assets/...) in README.md.
+# This keeps the repo lightweight while videos play natively on GitHub.
+assets/demo/videos/
+*.mp4
+*.mov
+*.webm
+
+# ── Build output ────────────────────────────────────────────────────────────
+dist/
+dist-desktop/
+release/
+output/
+*.js.map
+
+# ── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Secrets & credentials — NEVER commit ─────────────────────────────────────
+API.txt
+.github-auth-temp/
+.env
+.env.*
+*.key
+*.pem
+settings.json
+
+# ── Runtime data (generated at runtime, not part of source) ──────────────────
+# AllyCode stores runtime data under ~/.allycode/ or $ALLYCODE_DATA_DIR.
+# If ALLYCODE_DATA_DIR is pointed inside the repo, these patterns protect it.
+/MEMORY/
+*.allycode/
+debug.log
+*.log
+.release/
+
+# ── Internal project documents (not for public release) ──────────────────────
+MEMORY.md
+OPERATIONS.md
+LEARNINGS.md
+DEMO_SCRIPT.md
+WHITEPAPER.md
+CLAUDE.md
+DEPLOY.md
+EVALUATION_REPORT.md
+CASE_STUDY_CDN.md
+AllyCode_优化需求提示词.md
+blog/
+datasets/
+
+# ── Generated public-release staging ─────────────────────────────────────────
+open-source/
+
+# ── Claude Code source reference (local study copy, not part of this project) ─
+claude-code-main/
+claude/
+package/
+
+# ── OS & editor ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── TypeScript cache ─────────────────────────────────────────────────────────
+*.tsbuildinfo
+node_modules

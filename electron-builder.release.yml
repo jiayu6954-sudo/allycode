@@ -1,0 +1,35 @@
+appId: com.allycode.desktop
+productName: AllyCode
+forceCodeSigning: true
+directories:
+  output: release/alpha.8
+files:
+  - dist-desktop/**/*
+  - dist/**/*
+  - package.json
+  - node_modules/**/*
+extraResources:
+  - from: .release/update-sources.json
+    to: update-sources.json
+win:
+  icon: desktop/assets/icon.png
+  forceCodeSigning: true
+  signingHashAlgorithms:
+    - sha256
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: AllyCode
+artifactName: "${productName}-${version}-${arch}-${target}.${ext}"
+publish:
+  provider: generic
+  url: "${env.ALLYCODE_PRIMARY_UPDATE_URL}"
