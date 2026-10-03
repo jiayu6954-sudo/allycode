@@ -42,8 +42,8 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "bytes": 3409,
-      "sha256": "6faf1d9dac031e37ca19adcda5b1652f2def9aec2f55ba5fdeb1b348228573f6"
+      "bytes": 3522,
+      "sha256": "3cee76d677f57370e44b6952ca28d92c8950d5249fc2b78a07e550a170a01fe0"
     },
     {
       "path": ".gitignore",

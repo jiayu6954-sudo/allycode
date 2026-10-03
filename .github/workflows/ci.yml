@@ -77,7 +77,8 @@ jobs:
         run: npm run lint
 
       - name: Run tests
-        run: npm run test:run
+        # Bound process/IO contention on hosted Windows runners; keep test timeouts unchanged.
+        run: npm run test:run -- --maxWorkers=2
 
       - name: Build all targets
         run: npm run build
