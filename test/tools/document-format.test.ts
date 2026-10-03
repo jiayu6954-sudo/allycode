@@ -6,6 +6,8 @@ import {executeDocumentFormat} from "../../src/tools/document-format.js";
 import {executeDocumentVerify} from "../../src/tools/document-verify.js";
 import {executeSourcesExcel,findPython,hashDocument} from "../../src/tools/sources-to-excel.js";
 import {documentProcess} from "../../src/tools/local-document-process.js";
+// These integration cases launch Python repeatedly; 5s is not a document performance SLA.
+const DOCUMENT_INTEGRATION_TIMEOUT = 30_000;
 const roots:string[]=[];
 afterEach(async()=>{for(const root of roots.splice(0))await fs.rm(root,{recursive:true,force:true});});
 async function fixture(){const cwd=await fs.mkdtemp(path.join(os.tmpdir(),"ally-format-"));roots.push(cwd);await fs.writeFile(path.join(cwd,"source.csv"),"ID,amount\n00123,1280.50");return {cwd,timeoutMs:60000};}
@@ -19,7 +21,7 @@ it("writes structured content with mandatory formatting, traceability and no ove
  await expect(executeDocumentVerify({path:request.output,sources:request.sources,expectedText:["00123","1280.50","附件：数据说明"],minTables:1},ctx)).resolves.toMatchObject({isError:false});
  await expect(executeDocumentFormat({action:"build",request},ctx)).rejects.toThrow("不能覆盖");
  await expect(executeDocumentFormat({action:"build",request:{...request,output:"../outside.docx"}},ctx)).rejects.toThrow("outside");
-});
+}, DOCUMENT_INTEGRATION_TIMEOUT);
 it("adds blank lines only after the main title and converts Word table evidence into a real workbook",async()=>{
  const ctx=await fixture();await executeDocumentFormat({action:"build",request},ctx);
  const python=await findPython(ctx,["docx","openpyxl"]);if(!python?.ready)throw new Error("Test prerequisite: docx/openpyxl");
@@ -37,7 +39,7 @@ it("adds blank lines only after the main title and converts Word table evidence 
  expect(result.isError).toBe(false);
  const cells=JSON.parse(await documentProcess(python.command,[...python.args,"-I","-c","import json;from openpyxl import load_workbook;w=load_workbook('结果/转换.xlsx');s=w.active;print(json.dumps([s['A2'].value,s['B2'].value,s['A2'].data_type]));w.close()"],ctx));
  expect(cells).toEqual(["00123",1280.5,"s"]);
-});
+}, DOCUMENT_INTEGRATION_TIMEOUT);
 it("never skips a textless PDF page; only matching full-page OCR can reconstruct editable text",async()=>{
  const ctx=await fixture();const python=await findPython(ctx,["pypdf"]);if(!python?.ready)throw new Error("Test prerequisite: pypdf");
  await documentProcess(python.command,[...python.args,"-I","-c","from pypdf import PdfWriter;w=PdfWriter();w.add_blank_page(width=595,height=842);w.write('scan.pdf')"],ctx);
@@ -50,7 +52,7 @@ it("never skips a textless PDF page; only matching full-page OCR can reconstruct
  const result=await executeDocumentFormat({action:"pdf_to_word",request:{...conversion,ocr:["ocr.json"]}},ctx);
  expect(JSON.parse(result.content)).toMatchObject({layoutRestored:false,totalPages:1,ocrPages:[1]});
  await expect(executeDocumentVerify({path:"converted.docx",sources:["scan.pdf"],expectedText:["扫描件回归测试 00123","原始版式"]},ctx)).resolves.toMatchObject({isError:false});
-});
+}, DOCUMENT_INTEGRATION_TIMEOUT);
 it("preserves mixed table structures and requires a per-sheet design before writing Word-derived data",async()=>{
  const ctx=await fixture();
  const mixed={...request,sections:[...request.sections,{heading:"事项",paragraphs:["与金额数据属于不同记录粒度"],tables:[{headers:["事项","负责人","状态"],rows:[["复核","张三","待办"]]}]}]};
@@ -69,7 +71,7 @@ it("preserves mixed table structures and requires a per-sheet design before writ
  expect(audit.request.sheets[0].columns.map((c:{key:string})=>c.key)).toEqual(fields);
  expect(audit.request.sheets[0].rowMeaning).toBe("一行一项待办");
  expect(audit.result.unresolved_files).toContain(source.id);
-});
+}, DOCUMENT_INTEGRATION_TIMEOUT);
 it("repairs only the initial title spacing in a new copy, preserving tables, images and all other ZIP parts",async()=>{
  const ctx=await fixture();await executeDocumentFormat({action:"build",request},ctx);
  const python=await findPython(ctx,["docx"]);if(!python?.ready)throw new Error("docx missing");
@@ -81,4 +83,4 @@ it("repairs only the initial title spacing in a new copy, preserving tables, ima
  expect(await hashDocument(path.join(ctx.cwd,"old.docx"))).toBe(hash);
  const inspect="from zipfile import ZipFile;from lxml import etree as E;from docx import Document;a=ZipFile('old.docx');b=ZipFile('fixed.docx');assert a.namelist()==b.namelist();assert all(a.read(n)==b.read(n) for n in a.namelist() if n!='word/document.xml');x=E.fromstring(a.read('word/document.xml'));y=E.fromstring(b.read('word/document.xml'));ns={'w':'http://schemas.openxmlformats.org/wordprocessingml/2006/main'};body=y.find('w:body',ns);[body.remove(body[1]) for _ in range(2)];assert E.tostring(x)==E.tostring(y);print('unchanged_except_two_blank_paragraphs')";
  expect(await documentProcess(python.command,[...python.args,"-I","-X","utf8","-c",inspect],ctx)).toContain("unchanged_except_two_blank_paragraphs");
-});
+}, DOCUMENT_INTEGRATION_TIMEOUT);

@@ -92,7 +92,8 @@ describe("AgentDatabase", () => {
     expect(fixture.database.listMonitorEvents(task.id)).toHaveLength(2_101);
     expect(fixture.database.listMonitorEvents(task.id).some((item) => item.eventType === "agent_text_delta")).toBe(false);
     fixture.database.close();
-  });
+    // 2,100 durable writes verify completeness; hosted disk speed is not the assertion.
+  }, 30_000);
 
   it("turns interrupted active tasks into resumable paused tasks", async () => {
     const fixture = await createFixture();

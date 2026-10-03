@@ -437,8 +437,8 @@
     },
     {
       "path": "docs/PUBLIC_RELEASE.md",
-      "bytes": 5452,
-      "sha256": "47a14e08d089da40fcab824af6ddf51e3b41b0cd781f4dbe44385fff22580376"
+      "bytes": 5757,
+      "sha256": "31b8a27a6a9e65127a4d39e3c9b7b45b66aef21b879210aaf7613c4f283ed583"
     },
     {
       "path": "electron-builder.release.yml",
@@ -1642,8 +1642,8 @@
     },
     {
       "path": "test/storage/agent-database.test.ts",
-      "bytes": 7981,
-      "sha256": "4f4a3b3b07a705a4a421687569f4a59af04a51072594b876559c52e3fab55215"
+      "bytes": 8078,
+      "sha256": "47cd444fe57bd0158b460435c8db5b30e7ddb3c5a4590d228292511b678c22bd"
     },
     {
       "path": "test/storage/provider-state-persistence.test.ts",
@@ -1672,8 +1672,8 @@
     },
     {
       "path": "test/tools/document-format.test.ts",
-      "bytes": 10168,
-      "sha256": "c97d0296ac51e7f44342c003d6b2c7a91d7201ae34a9c3420e932142b532caaa"
+      "bytes": 10403,
+      "sha256": "36b0af7c5fc72976691a845c102ab81b90d40a7de24afd1e5d42bcf87a459b9c"
     },
     {
       "path": "test/tools/document-verify.test.ts",
