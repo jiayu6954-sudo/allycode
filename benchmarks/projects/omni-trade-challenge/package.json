@@ -1,0 +1,12 @@
+{
+  "name": "omni-trade-industrial-agent-challenge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start:test": "node -e \"console.error('尚未实现 start:test，请由 Agent 创建系统');process.exit(2)\""
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

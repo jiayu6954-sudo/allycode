@@ -1,0 +1,262 @@
+{
+  "tools": [
+    {
+      "name": "scan_sources",
+      "description": "清点资料并提取原始文字/表格，需由 Agent 继续视觉识别、语义整理和字段设计。",
+      "command": "scan",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "inputs",
+          "output"
+        ],
+        "properties": {
+          "inputs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "output": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exclude": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "build_excel",
+      "description": "把 Agent 整理后的动态字段与带证据记录写为普通 Excel；必须交代全部来源文件的处理状态。",
+      "command": "build",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "manifest",
+          "output",
+          "coverage",
+          "sheets"
+        ],
+        "properties": {
+          "manifest": {
+            "type": "string",
+            "minLength": 1
+          },
+          "output": {
+            "type": "string",
+            "minLength": 1
+          },
+          "coverage": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "status": {
+                  "enum": [
+                    "included",
+                    "partial",
+                    "duplicate",
+                    "out_of_scope",
+                    "unreadable"
+                  ]
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "review_note": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "duplicate_of": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "sheets": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "columns",
+                "rows"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "columns": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "key",
+                      "header"
+                    ],
+                    "properties": {
+                      "key": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "header": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "type": {
+                        "enum": [
+                          "text",
+                          "integer",
+                          "decimal",
+                          "date",
+                          "boolean",
+                          "formula"
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "rows": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "values",
+                      "evidence"
+                    ],
+                    "properties": {
+                      "values": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "oneOf": [
+                            {
+                              "type": [
+                                "string",
+                                "integer",
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            {
+                              "type": "object",
+                              "required": [
+                                "formula",
+                                "expected",
+                                "explanation"
+                              ],
+                              "properties": {
+                                "formula": {
+                                  "type": "string",
+                                  "pattern": "^=",
+                                  "maxLength": 4000
+                                },
+                                "expected": {
+                                  "type": [
+                                    "string",
+                                    "integer",
+                                    "boolean"
+                                  ]
+                                },
+                                "resultType": {
+                                  "enum": [
+                                    "decimal",
+                                    "integer",
+                                    "text",
+                                    "boolean"
+                                  ]
+                                },
+                                "explanation": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "tolerance": {
+                                  "type": "string"
+                                },
+                                "numberFormat": {
+                                  "type": "string",
+                                  "maxLength": 100
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "evidence": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "array",
+                          "minItems": 1,
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "file_id",
+                              "locator",
+                              "quote"
+                            ],
+                            "properties": {
+                              "file_id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "locator": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "quote": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "issues": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "normalizations": {},
+                      "derivations": {}
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "rowMeaning": {
+                  "type": "string"
+                },
+                "designReason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}

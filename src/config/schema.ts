@@ -1,4 +1,4 @@
-﻿import { z } from "zod";
+import { z } from "zod";
 
 const PermissionLevelSchema = z.enum(["auto", "ask", "deny"]);
 
@@ -10,14 +10,66 @@ export const SettingsSchema = z.object({
 
   model: z
     .string()
-    .default("deepseek-chat"),
+    .default("deepseek-v4-pro"),
 
-  maxTokens: z.number().int().min(1024).max(128000).default(32000),
+  maxTokens: z.number().int().min(1024).max(384000).default(32000),
+
+  /** Wire protocol used for model requests. Auto selects a verified provider default. */
+  providerProtocol: z
+    .enum(["auto", "anthropic", "chat_completions", "responses"])
+    .default("auto"),
+
+  reasoning: z
+    .object({
+      /** Thinking/reasoning mode where the selected protocol supports it. */
+      mode: z.enum(["auto", "enabled", "disabled"]).default("auto"),
+      /** Provider adapters normalize this value to their supported effort levels. */
+      effort: z.enum(["auto", "low", "medium", "high", "max", "xhigh"]).default("auto"),
+    })
+    .default({}),
 
   tokenBudget: z
     .object({
       warningThreshold: z.number().min(0).max(100).default(80),
       hardLimit: z.number().optional(),
+    })
+    .default({}),
+
+  /** Deterministic loop limits prevent runaway retries and cost drift. */
+  executionBudget: z
+    .object({
+      maxModelTurnsPerRun: z.number().int().min(1).max(200).default(80),
+      maxToolCallsPerRun: z.number().int().min(1).max(2000).default(300),
+      /** Legacy totals only apply after explicit opt-in; old settings migrate to stages. */
+      enforceTaskLimits: z.boolean().default(false),
+      maxModelTurnsPerTask: z.number().int().min(1).max(500).default(160),
+      maxToolCallsPerTask: z.number().int().min(1).max(2000).default(300),
+    })
+    .default({}),
+
+  /** Agent runtime selection. External engines are optional and never auto-installed. */
+  agentEngine: z
+    .object({
+      /** Auto keeps the built-in engine unless a tested external engine is explicitly selected. */
+      mode: z
+        .enum(["auto", "native", "codex", "deepseek-harness"])
+        .default("auto"),
+      /** Fall back to the built-in engine only when the selected engine cannot start. */
+      fallbackToNative: z.boolean().default(true),
+      codexCommand: z
+        .string()
+        .trim()
+        .min(1)
+        .max(500)
+        .regex(/^[^\r\n\0]+$/, "Codex 命令不能包含换行或空字符")
+        .default("codex"),
+      deepseekHarnessCommand: z
+        .string()
+        .trim()
+        .min(1)
+        .max(500)
+        .regex(/^[^\r\n\0]+$/, "DeepSeek Harness 命令不能包含换行或空字符")
+        .default("dsh"),
     })
     .default({}),
 
@@ -32,8 +84,22 @@ export const SettingsSchema = z.object({
       web_fetch: PermissionLevelSchema.default("ask"),
       web_search: PermissionLevelSchema.default("ask"),
       session_search: PermissionLevelSchema.default("auto"),
+      evidence_read: PermissionLevelSchema.default("auto"),
+      desktop_control: PermissionLevelSchema.default("ask"),
+      plan_update: PermissionLevelSchema.default("auto"),
+      verification_status: PermissionLevelSchema.default("auto"),
+      phase_checkpoint: PermissionLevelSchema.default("auto"),
+      sources_to_excel: PermissionLevelSchema.default("ask"),
+      document_ocr: PermissionLevelSchema.default("ask"),
+      document_verify: PermissionLevelSchema.default("auto"),
+      document_format: PermissionLevelSchema.default("ask"),
+      vision_analyze: PermissionLevelSchema.default("ask"),
       git_commit: PermissionLevelSchema.default("ask"),
       spawn_research: PermissionLevelSchema.default("ask"),
+      service_start: PermissionLevelSchema.default("ask"),
+      service_status: PermissionLevelSchema.default("auto"),
+      service_stop: PermissionLevelSchema.default("auto"),
+      browser_verify: PermissionLevelSchema.default("ask"),
     })
     .default({}),
 
@@ -41,7 +107,7 @@ export const SettingsSchema = z.object({
     .array(
       z.object({
         tool: z.union([
-          z.enum(["bash", "file_read", "file_write", "file_edit", "glob", "grep", "web_fetch", "web_search", "session_search", "git_commit", "spawn_research"]),
+          z.enum(["bash", "file_read", "file_write", "file_edit", "glob", "grep", "web_fetch", "web_search", "session_search", "evidence_read", "plan_update", "verification_status", "phase_checkpoint", "sources_to_excel", "document_ocr", "document_verify", "document_format", "vision_analyze", "git_commit", "spawn_research", "service_start", "service_status", "service_stop", "browser_verify"]),
           z.literal("*"),
         ]),
         level: PermissionLevelSchema,
@@ -63,6 +129,14 @@ export const SettingsSchema = z.object({
       maxHistoryMessages: z.number().int().min(2).default(50),
       compactionThreshold: z.number().min(50).max(95).default(80),
       claudeMdPaths: z.array(z.string()).default([]),
+      /**
+       * Ceiling on the transcript resent to the model each turn — the main
+       * cost lever, since every turn rebills the whole working set. Lower
+       * spends less; higher keeps more history in view.
+       */
+      maxContextTokens: z.number().int().min(8_000).max(400_000).default(60_000),
+      /** Trailing messages always kept in full, however tight the budget. */
+      keepRecentMessages: z.number().int().min(4).max(200).default(20),
     })
     .default({}),
 
@@ -207,14 +281,23 @@ export const SettingsSchema = z.object({
   mcpServers: z
     .array(
       z.object({
-        name: z.string(),
+        name: z.string().trim().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/, "MCP 名称只能包含字母、数字、短横线或下划线"),
+        enabled: z.boolean().default(true),
         transport: z.enum(["stdio", "http"]),
-        command: z.string().optional(),
-        args: z.array(z.string()).optional(),
+        command: z.string().trim().max(500).optional(),
+        args: z.array(z.string().max(500)).max(100).optional(),
         env: z.record(z.string()).optional(),
-        url: z.string().optional(),
+        url: z.string().url().optional(),
+      }).superRefine((server, ctx) => {
+        if (server.transport === "stdio" && !server.command) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["command"], message: "stdio MCP 必须配置启动命令" });
+        }
+        if (server.transport === "http" && !server.url) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "HTTP MCP 必须配置有效地址" });
+        }
       })
     )
+    .max(20)
     .default([]),
 
   // ── Desktop onboarding and updates ───────────────────────────────────────

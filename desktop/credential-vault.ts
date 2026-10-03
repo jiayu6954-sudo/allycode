@@ -18,7 +18,7 @@ export const CREDENTIAL_PATHS = {
   github: ["github", "token"],
 } as const;
 
-export type CredentialId = keyof typeof CREDENTIAL_PATHS;
+export type CredentialId = keyof typeof CREDENTIAL_PATHS | "accountSession";
 export type CredentialValues = Partial<Record<CredentialId, string>>;
 
 export interface SecretCryptography {
@@ -49,6 +49,7 @@ export class CredentialVault {
   }
 
   async getAll(): Promise<CredentialValues> {
+    if (!(await this.cryptography.isAvailable())) return {};
     const document = await this.readDocument();
     const result: CredentialValues = {};
     const rotated: CredentialValues = {};
@@ -64,6 +65,7 @@ export class CredentialVault {
 
   async setMany(values: CredentialValues): Promise<void> {
     if (Object.keys(values).length === 0) return;
+    await this.initialize();
     const document = await this.readDocument();
     for (const [id, value] of Object.entries(values)) {
       if (!isCredentialId(id)) continue;
@@ -135,13 +137,13 @@ export function hydrateCredentials(
 ): AllyCodeSettings {
   const hydrated = structuredClone(settings);
   for (const [id, value] of Object.entries(credentials) as Array<[CredentialId, string]>) {
-    if (value) setAtPath(hydrated, CREDENTIAL_PATHS[id], value);
+    if (value && id !== "accountSession") setAtPath(hydrated, CREDENTIAL_PATHS[id], value);
   }
   return hydrated;
 }
 
 function isCredentialId(value: string): value is CredentialId {
-  return value in CREDENTIAL_PATHS;
+  return value === "accountSession" || Object.hasOwn(CREDENTIAL_PATHS, value);
 }
 
 function getAtPath(target: object, keys: readonly string[]): unknown {

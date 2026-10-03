@@ -19,6 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { TokenUsage } from "../types/agent.js";
+import { findPrice } from "../utils/pricing.js";
 import { writeClaudeMd } from "../memory/claude-md.js";
 import { loadSkills } from "../skills/loader.js";
 
@@ -96,12 +97,12 @@ const COMMANDS: CommandDef[] = [
         ``,
         `Input:     ${fmtTokens(usage.inputTokens)} tokens`,
         usage.cacheReadTokens > 0
-          ? `Cache hit: ${fmtTokens(usage.cacheReadTokens)} tokens (saved ~${fmtCost(usage.cacheReadTokens * 0.0000003)})`
+          ? `Cache hit: ${fmtTokens(usage.cacheReadTokens)} tokens (${cacheSavingLabel(usage.cacheReadTokens, model, provider)})`
           : "",
         `Output:    ${fmtTokens(usage.outputTokens)} tokens`,
         `Total:     ${fmtTokens(totalTok)} tokens`,
         ``,
-        `Est. cost: ${fmtCost(usage.estimatedCostUsd)}`,
+        `Est. cost: ${fmtCost(usage.estimatedCost, usage.costCurrency)}`,
         `──────────────────────────────────────`,
       ].filter(Boolean);
 
@@ -385,7 +386,7 @@ const COMMANDS: CommandDef[] = [
           `Messages:  ${ctx.messageCount}`,
           `Model:     ${ctx.model}  (${ctx.provider})`,
           `Tokens:    ${fmtTokens(ctx.usage.inputTokens + ctx.usage.cacheReadTokens + ctx.usage.outputTokens)}`,
-          `Cost:      ${fmtCost(ctx.usage.estimatedCostUsd)}`,
+          `Cost:      ${fmtCost(ctx.usage.estimatedCost, ctx.usage.costCurrency)}`,
           ctx.sessionId ? `Session:   #${ctx.sessionId.slice(0, 8)}` : "",
           `──────────────────────────────────────`,
         ]
@@ -441,9 +442,31 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
-function fmtCost(usd: number): string {
-  if (usd === 0) return "$0.000";
-  if (usd < 0.001) return `$${usd.toFixed(5)}`;
-  if (usd < 1) return `$${usd.toFixed(4)}`;
-  return `$${usd.toFixed(2)}`;
+/**
+ * What the cache hits saved: the gap between the miss rate that would have
+ * applied and the hit rate actually charged. Cache reads are billed, so this
+ * is a discount, never free. The previous line multiplied by Anthropic's rate
+ * regardless of provider, and read as though cache tokens cost nothing.
+ */
+function cacheSavingLabel(cacheReadTokens: number, model: string, provider?: string): string {
+  const price = findPrice(model, provider);
+  const miss = price?.inputCacheMissPerMillion;
+  const hit = price?.inputCacheHitPerMillion;
+  if (!price || miss === undefined || hit === undefined) return "该模型缓存单价未登记，省下多少未知";
+  const saved = (cacheReadTokens / 1_000_000) * (miss - hit);
+  const charged = (cacheReadTokens / 1_000_000) * hit;
+  return `省 ~${fmtCost(saved, price.currency)}，仍计费 ${fmtCost(charged, price.currency)}`;
+}
+
+/** Currency-aware; an unknown price prints as such instead of $0.000. */
+function fmtCost(
+  amount: number | null,
+  currency: import("../utils/pricing.js").Currency | null = "USD",
+): string {
+  if (amount === null || currency === null) return "费用未知";
+  const symbol = currency === "CNY" ? "¥" : "$";
+  if (amount === 0) return `${symbol}0.000`;
+  if (amount < 0.001) return `${symbol}${amount.toFixed(5)}`;
+  if (amount < 1) return `${symbol}${amount.toFixed(4)}`;
+  return `${symbol}${amount.toFixed(2)}`;
 }

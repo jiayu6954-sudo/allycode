@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 import { randomUUID } from "node:crypto";
 import type { UIMessage, AgentEvent, StatusInfo, TokenUsage } from "../../types/agent.js";
 import type { AppState } from "../../types/ui.js";
@@ -15,8 +15,8 @@ import { PermissionManager } from "../../permissions/manager.js";
 import { loadClaudeMd } from "../../memory/claude-md.js";
 import { extractAndSaveMemory, loadLongTermMemory } from "../../memory/long-term.js";
 import { SandboxManager } from "../../sandbox/manager.js";
-import { createSession, saveSession, loadSession, deriveTitle } from "../../memory/session.js";
-import { calculateCost } from "../../utils/cost-calculator.js";
+import { createSession, saveSession, loadSession, deriveTitle, assertSessionWorkspace } from "../../memory/session.js";
+import { addUsage, consumedTokens, withModelAccounting } from "../../providers/model-gateway.js";
 import { SessionStats } from "../../utils/stats.js";
 import { logger } from "../../utils/logger.js";
 import { handleSlashCommand } from "../../commands/slash.js";
@@ -55,7 +55,8 @@ export function useAgentLoop({
   const [statusInfo, setStatusInfo] = useState<StatusInfo>({
     model: settings.model,
     totalTokens: 0,
-    estimatedCostUsd: 0,
+    estimatedCost: null,
+    costCurrency: null,
   });
   const [currentActivity, setCurrentActivity] = useState<string>("");
   const [streamingTokens, setStreamingTokens] = useState<number>(0);
@@ -73,10 +74,11 @@ export function useAgentLoop({
     initialSessionId ? null : createSession(cwd, settings.model)
   );
   const totalUsageRef = useRef<TokenUsage>({
-    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0,
+    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+    estimatedCost: null, costCurrency: null,
   });
   // Innovation 4: per-submit stats tracker
-  const statsRef = useRef<SessionStats>(new SessionStats());
+  const statsRef = useRef<SessionStats>(new SessionStats(settings.model, settings.provider));
   // Innovation 8: MCP registry persisted across submits to avoid spawning new
   // child processes on every message (connection leak fix).
   const mcpRegistryRef = useRef<MCPRegistry | null>(null);
@@ -171,7 +173,7 @@ export function useAgentLoop({
       // Load memory entries for /memory command (non-fatal)
       let memoryEntries: string[] | undefined;
       try {
-        const mem = await loadLongTermMemory(cwd);
+        const mem = sessionRef.current ? await loadLongTermMemory(cwd, sessionRef.current.id) : null;
         if (mem) {
           memoryEntries = [
             mem.user            ? `User profile: ${mem.user.slice(0, 120)}` : null,
@@ -194,8 +196,8 @@ export function useAgentLoop({
           setMessages([]);
           contextManagerRef.current = null;
           sessionRef.current = createSession(cwd, settings.model);
-          totalUsageRef.current = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCostUsd: 0 };
-          statsRef.current = new SessionStats();
+          totalUsageRef.current = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCost: null, costCurrency: null };
+          statsRef.current = new SessionStats(settings.model, settings.provider);
         },
         triggerCompact: async () => {
           if (contextManagerRef.current) {
@@ -245,7 +247,7 @@ export function useAgentLoop({
       }
 
       // Reset stats for this submit
-      statsRef.current = new SessionStats();
+      statsRef.current = new SessionStats(settings.model, settings.provider);
 
       // Initialize context manager on first use
       if (!contextManagerRef.current) {
@@ -265,6 +267,7 @@ export function useAgentLoop({
       }
 
       const session = sessionRef.current ?? createSession(cwd, settings.model);
+      assertSessionWorkspace(session, cwd);
       if (!sessionRef.current) sessionRef.current = session;
       if (!session.title) session.title = deriveTitle(effectiveInput);
 
@@ -358,7 +361,7 @@ export function useAgentLoop({
       // Innovation 3: inject summary context from prior compressions
       const claudeMd = await loadClaudeMd(cwd, settings.context.claudeMdPaths);
       const summaryContext = contextManagerRef.current.getSummaryContext();
-      const systemPrompt = await buildSystemPrompt(cwd, claudeMd, settings, summaryContext, effectiveInput);
+      const systemPrompt = await buildSystemPrompt(cwd, claudeMd, settings, summaryContext, effectiveInput, sessionRef.current?.id);
 
       setCurrentActivity("");
       setStreamingTokens(0);
@@ -492,14 +495,7 @@ export function useAgentLoop({
             break;
 
           case "usage": {
-            const newUsage: TokenUsage = {
-              inputTokens: totalUsageRef.current.inputTokens + event.inputTokens,
-              outputTokens: totalUsageRef.current.outputTokens + event.outputTokens,
-              cacheReadTokens: totalUsageRef.current.cacheReadTokens + event.cacheReadTokens,
-              cacheWriteTokens: totalUsageRef.current.cacheWriteTokens + event.cacheWriteTokens,
-              estimatedCostUsd: 0,
-            };
-            newUsage.estimatedCostUsd = calculateCost(settings.model, newUsage);
+            const newUsage = addUsage(totalUsageRef.current, { inputTokens: event.inputTokens, outputTokens: event.outputTokens, cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens, estimatedCost: event.estimatedCost ?? null, costCurrency: event.costCurrency ?? null });
             totalUsageRef.current = newUsage;
             // Fix: update context manager's token count so shouldCompact() can trigger.
             // Without this, lastInputTokens stays 0 and compaction never fires automatically.
@@ -509,22 +505,16 @@ export function useAgentLoop({
               cache_creation_input_tokens: newUsage.cacheWriteTokens,
               cache_read_input_tokens: newUsage.cacheReadTokens,
             } as Parameters<ContextManager["updateTokenCount"]>[0]);
-            // Innovation 4: keep stats in sync
-            statsRef.current.updateUsage({
-              inputTokens: event.inputTokens,
-              outputTokens: event.outputTokens,
-              cacheReadTokens: event.cacheReadTokens,
-              cacheWriteTokens: event.cacheWriteTokens,
-            });
             // Innovation 8: compute budget pressure for UI coloring
             const hardLimit = settings.tokenBudget?.hardLimit;
             const budgetUsedPct = hardLimit
-              ? Math.min(100, Math.round(((newUsage.inputTokens + newUsage.outputTokens) / hardLimit) * 100))
+              ? Math.min(100, Math.round(((newUsage.inputTokens + newUsage.outputTokens + newUsage.cacheReadTokens + newUsage.cacheWriteTokens + (newUsage.unknownReservedTokens ?? 0)) / hardLimit) * 100))
               : undefined;
             setStatusInfo({
               model: settings.model,
               totalTokens: newUsage.inputTokens + newUsage.outputTokens,
-              estimatedCostUsd: newUsage.estimatedCostUsd,
+              estimatedCost: newUsage.estimatedCost,
+              costCurrency: newUsage.costCurrency,
               sessionId: session.id,
               budgetUsedPct,
             });
@@ -590,13 +580,18 @@ export function useAgentLoop({
             maxTokens: settings.maxTokens,
             systemPrompt,
             conversationHistory: contextManagerRef.current.getHistory(),
+            compactionState: session.compactionState,
+            onCompactionChange: async (state) => { session.compactionState = state; },
+            onHistoryChange: async (history) => { session.messages = history; await saveSession(session); },
+            maxIterations: settings.executionBudget.maxModelTurnsPerRun,
+            historyBudget: { maxContextTokens: settings.context.maxContextTokens, keepRecentMessages: settings.context.keepRecentMessages },
             onEvent,
             signal: abortControllerRef.current.signal,
             // Innovation 8 + I010: pass budget (dynamic override wins over config)
             tokenBudget: (dynamicHardLimit ?? settings.tokenBudget?.hardLimit) !== undefined ? {
               warningThreshold: settings.tokenBudget?.warningThreshold,
               hardLimit: dynamicHardLimit ?? settings.tokenBudget!.hardLimit,
-              priorTokens: totalUsageRef.current.inputTokens + totalUsageRef.current.outputTokens,
+              priorTokens: consumedTokens(totalUsageRef.current),
             } : undefined,
           },
           tools,
@@ -611,30 +606,25 @@ export function useAgentLoop({
         const prevCount = contextManagerRef.current.messageCount;
         for (const msg of loopResult.updatedHistory.slice(prevCount)) {
           contextManagerRef.current.append(msg);
-          session.messages.push(msg);
-        }
 
-        // Innovation 3: LLM-powered smart compaction when context is large.
-        // Requires Anthropic API key (uses Haiku for summarization).
-        // Skip gracefully if no key — falls back to simple truncation via append().
-        if (contextManagerRef.current.shouldCompact()) {
-          onStateChange("compacting");
-          await contextManagerRef.current.compactWithSummary(provider, settings.model);
-          onStateChange("idle");
         }
 
         // Innovation 7: extract and persist long-term memory using current provider.
         // Works with any provider (DeepSeek, Anthropic, etc.) — no longer requires Anthropic key.
         if (settings.memory.enabled) {
-          extractAndSaveMemory(
+          await withModelAccounting({ model: settings.model, maxTokens: settings.maxTokens, systemPrompt: "", conversationHistory: [], onEvent, tokenBudget: { warningThreshold: settings.tokenBudget.warningThreshold, hardLimit: dynamicHardLimit ?? settings.tokenBudget.hardLimit, priorTokens: consumedTokens(totalUsageRef.current) } }, async () => {
+            await extractAndSaveMemory(
             cwd,
-            contextManagerRef.current.getHistory(),
+            session.messages,
             provider,
             settings.model,
-            true
+            true,
+            session.id,
           ).catch((err) => logger.warn("memory.extract.background_error", err));
+          });
         }
 
+        session.totalUsage = totalUsageRef.current;
         await saveSession(session);
       } catch (err) {
         logger.error("useAgentLoop.submit.error", err);

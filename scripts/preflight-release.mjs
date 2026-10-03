@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const expectedVersion = "0.10.0-alpha.8";
+const expectedVersion = "0.10.0-alpha.9";
 const packageDocument = JSON.parse(await fs.readFile("package.json", "utf8"));
 const failures = [];
 

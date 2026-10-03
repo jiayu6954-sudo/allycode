@@ -20,13 +20,13 @@ This boundary applies to AllyCode's dedicated file tools. A user-approved host s
 
 ## Docker sandbox
 
-When enabled, shell commands run in an ephemeral Docker container if Docker is available.
+When enabled, shell commands run in an persistent per-task Docker container if Docker is available.
 
 - `strict`: read-only workspace and no network.
 - `standard`: writable workspace with configured network access.
 - `permissive`: least restrictive container policy.
 
-If Docker is unavailable, the terminal UI visibly warns that shell commands may fall back to the host. Host execution still goes through permission approval. Do not interpret the sandbox setting alone as proof that Docker isolation is active.
+If Docker is enabled but unavailable, host fallback is disabled by default. Enabling `fallbackToHost` is an explicit configuration choice; host execution still goes through permission approval. Standard mode permits configured network access for build compatibility; strict mode disables it. Do not interpret sandbox configuration alone as proof that isolation is active.
 
 ## Desktop isolation
 

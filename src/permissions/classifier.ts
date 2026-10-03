@@ -1,4 +1,4 @@
-﻿import type { ToolInput, BashInput, FileWriteInput } from "../types/tools.js";
+import type { ToolInput, BashInput, FileWriteInput } from "../types/tools.js";
 import type { RiskLevel } from "../types/permissions.js";
 
 // Patterns that indicate a dangerous bash command
@@ -80,6 +80,12 @@ const PROTECTED_WRITE_PATHS = [
 
 export function classifyRisk(toolName: string, input: ToolInput | Record<string, unknown>): RiskLevel {
   switch (toolName) {
+    case "document_verify": return "safe";
+    case "document_format": return (input as Record<string,unknown>).action === "status" ? "safe" : "moderate";
+    case "sources_to_excel":
+    case "vision_analyze":
+    case "document_ocr": return ["status","inspect"].includes(String((input as Record<string, unknown>).action)) ? "safe" : "moderate";
+    case "desktop_control": return ["list_windows", "inspect"].includes(String((input as Record<string, unknown>).action)) ? "moderate" : "dangerous";
     case "bash": {
       const cmd = (input as BashInput).command;
       if (DANGEROUS_BASH_PATTERNS.some((p) => p.test(cmd))) return "dangerous";
@@ -101,19 +107,72 @@ export function classifyRisk(toolName: string, input: ToolInput | Record<string,
     case "file_read":
     case "glob":
     case "grep":
+    case "evidence_read":
     case "session_search":
+    case "plan_update":
+    case "verification_status":
+    case "phase_checkpoint":
       return "safe";
 
     case "web_fetch":
       return "safe";
+
+    // Reading service state and shutting a service down are recovery actions.
+    // Gating them behind a prompt is what leaks orphaned servers and held ports.
+    case "service_status":
+    case "service_stop":
+      return "safe";
+
+    case "service_start": {
+      const cmd = String((input as Record<string, unknown>)["command"] ?? "");
+      if (DANGEROUS_BASH_PATTERNS.some((p) => p.test(cmd))) return "dangerous";
+      return "moderate";
+    }
+
+    // Verifying a page the agent itself is serving stays inside the project
+    // boundary; any other origin is real network egress and needs a decision.
+    case "browser_verify": {
+      const actions = (input as Record<string, unknown>)["actions"];
+      if (Array.isArray(actions) && actions.some((action: {type?: string}) => action.type === "click" || action.type === "fill")) return "dangerous";
+      return isLoopbackUrl(String((input as Record<string, unknown>)["url"] ?? ""))
+        ? "safe"
+        : "moderate";
+    }
 
     default:
       return "moderate";
   }
 }
 
+/** True for URLs served by this machine — the only ones verification auto-allows. */
+export function isLoopbackUrl(value: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(value);
+    if (!/^https?:$/.test(protocol)) return false;
+    const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return host === "localhost"
+      || host === "127.0.0.1"
+      || host === "0.0.0.0"
+      || host === "::1"
+      || host.endsWith(".localhost");
+  } catch {
+    return false;
+  }
+}
+
 export function describeAction(toolName: string, input: ToolInput | Record<string, unknown>): string {
   switch (toolName) {
+    case "document_format": return (input as Record<string,unknown>).action === "setup" ? "下载并安装文档组件到 AllyCode 组件目录，用于 Word 生成及 Word/PDF 转换" : "按内置公文规范生成或转换文档，保存到当前项目目录，并记录转换限制";
+    case "document_verify": return `检查 Word 报告能否读取、关键内容是否齐全及来源是否改变：${String((input as Record<string,unknown>).path)}`;
+    case "vision_analyze": return (input as Record<string,unknown>).action === "status" ? "检查本地视觉组件" : `在本机分析图片或扫描件：${String((input as Record<string,unknown>).path)}；结果进入当前任务上下文，并保存项目内证据。`;
+    case "sources_to_excel": {
+      const data = input as Record<string, unknown>;
+      const request = data.request as Record<string, unknown> | undefined;
+      const labels: Record<string,string> = { status: "检查 Excel 运行组件", inspect: "分页查看资料清单与原文", setup: "联网下载 Excel/PDF 组件，安装到当前项目的隔离 Python 环境", scan: "扫描项目资料并生成来源清单", attach_ocr: "将本地 OCR 证据追加到资料清单", build: "生成 Excel 和来源审计文件，并重新打开校验" };
+      return `${labels[String(data.action)] ?? "处理 Excel 资料"}${request?.output ? `：${String(request.output)}` : ""}`;
+    }
+    case "document_ocr": return (input as Record<string,unknown>).action === "status" ? "检查本机 OCR 语言与可用性" : `在本机识别图片或扫描件文字：${String((input as Record<string,unknown>).path)}；识别文字将进入当前任务模型上下文。`;
+    case "desktop_control": return `电脑操作：${String((input as Record<string, unknown>).action)}；窗口 ${String((input as Record<string, unknown>).windowHandle ?? "窗口列表")}。该操作作用于本机软件。`;
     case "bash":
       return `运行命令：${(input as BashInput).command}`;
     case "file_read":
@@ -130,10 +189,23 @@ export function describeAction(toolName: string, input: ToolInput | Record<strin
       return `联网读取：${(input as { url: string }).url}`;
     case "web_search":
       return `联网搜索：${String((input as Record<string, unknown>)["query"] ?? "")}`;
+    case "evidence_read":
     case "session_search":
       return `搜索项目历史：${String((input as Record<string, unknown>)["query"] ?? "")}`;
+    case "plan_update":
+      return "更新当前任务计划";
     case "spawn_research":
       return "执行联网深度研究";
+    case "service_start":
+      return `启动常驻服务「${String((input as Record<string, unknown>)["name"] ?? "")}」：${String((input as Record<string, unknown>)["command"] ?? "")}`;
+    case "service_status":
+      return "查看常驻服务状态与日志";
+    case "service_stop":
+      return (input as Record<string, unknown>)["all"] === true
+        ? "停止本项目全部常驻服务"
+        : `停止常驻服务「${String((input as Record<string, unknown>)["name"] ?? "")}」`;
+    case "browser_verify":
+      return `真实浏览器验证页面：${String((input as Record<string, unknown>)["url"] ?? "")}`;
     default:
       return `执行工具：${toolName as string}`;
   }

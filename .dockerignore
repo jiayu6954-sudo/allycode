@@ -1,0 +1,11 @@
+**
+!package.json
+!package-lock.json
+!src/
+!src/accounts/
+!src/accounts/**
+!scripts/
+!scripts/build-accounts.mjs
+!deploy/
+!deploy/accounts/
+!deploy/accounts/Dockerfile

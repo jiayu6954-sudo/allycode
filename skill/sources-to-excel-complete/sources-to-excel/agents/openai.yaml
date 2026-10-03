@@ -1,0 +1,13 @@
+interface:
+  display_name: 资料一键生成 Excel
+  short_description: 扫描文件夹、发票、图片与零散文字，自动确定表头并核验数据，生成普通 Excel
+  default_prompt: 使用 $sources-to-excel，扫描我提供的全部资料，根据内容确定表头，核验并整理成无颜色无装饰的 Excel；无法确认的数据标记待核实。
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true

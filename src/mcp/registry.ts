@@ -43,6 +43,8 @@ export class MCPRegistry {
    * Failed servers are logged but do not abort startup.
    */
   async connect(configs: MCPServerConfig[]): Promise<void> {
+    this.clients = [];
+    this.tools.clear();
     await Promise.allSettled(
       configs.map((cfg) => this.connectOne(cfg))
     );
@@ -115,6 +117,9 @@ export class MCPRegistry {
       this.clients.push(client);
       for (const tool of tools) {
         const qualifiedName = `${cfg.name}${MCP_NS_SEP}${tool.name}`;
+        if (this.tools.has(qualifiedName)) {
+          throw new Error(`Duplicate MCP tool name: ${qualifiedName}`);
+        }
         this.tools.set(qualifiedName, { client, serverName: cfg.name, tool });
       }
 

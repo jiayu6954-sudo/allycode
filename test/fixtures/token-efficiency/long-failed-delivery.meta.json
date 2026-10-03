@@ -1,0 +1,14 @@
+{
+  "name": "long-failed-delivery",
+  "klass": "long",
+  "messageCount": 528,
+  "assistantTurns": 260,
+  "toolResultBlocks": 270,
+  "reasoningTurns": 73,
+  "sha256": "dcf86baaff988b153a279f51b58028b588b428d020bb58865d53c287b1609f03",
+  "redaction": "文本按字符类等长替换（汉字→文，数字→0，大写→A，小写→a），密钥/令牌/绝对用户路径先行整体屏蔽。保留消息结构、工具配对、长度与字符类分布。",
+  "sourceShape": {
+    "originalChars": 941415,
+    "fixtureChars": 1019709
+  }
+}

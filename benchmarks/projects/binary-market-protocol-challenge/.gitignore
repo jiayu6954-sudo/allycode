@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+.anchor/
+.env
+.allycode-eval/
+test-ledger/
+*.pem
+*.key

@@ -1,30 +1,42 @@
-﻿import type { ModelId, TokenUsage } from "../types/agent.js";
+import type { ModelId, TokenUsage } from "../types/agent.js";
+import {
+  computeCost,
+  formatAmount,
+  type CostBreakdown,
+  type Currency,
+} from "./pricing.js";
 
-// Prices in USD per million tokens (as of 2025)
-const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
-  "claude-opus-4-6":          { input: 15.00, output: 75.00, cacheRead: 1.50,  cacheWrite: 18.75 },
-  "claude-sonnet-4-6":        { input: 3.00,  output: 15.00, cacheRead: 0.30,  cacheWrite: 3.75  },
-  "claude-opus-4-5":          { input: 15.00, output: 75.00, cacheRead: 1.50,  cacheWrite: 18.75 },
-  "claude-sonnet-4-5":        { input: 3.00,  output: 15.00, cacheRead: 0.30,  cacheWrite: 3.75  },
-  "claude-haiku-4-5-20251001": { input: 0.80, output: 4.00,  cacheRead: 0.08,  cacheWrite: 1.00  },
-};
+export type { CostBreakdown, Currency } from "./pricing.js";
+export { computeCost, explainMissing, findPrice, listPricedModels } from "./pricing.js";
 
-export function calculateCost(model: ModelId, usage: Omit<TokenUsage, "estimatedCostUsd">): number {
-  const prices = PRICING[model] ?? PRICING["claude-sonnet-4-6"]!;
-  const M = 1_000_000;
-
-  return (
-    (usage.inputTokens / M) * prices.input +
-    (usage.outputTokens / M) * prices.output +
-    (usage.cacheReadTokens / M) * prices.cacheRead +
-    (usage.cacheWriteTokens / M) * prices.cacheWrite
-  );
+/**
+ * Cost for a session's usage.
+ *
+ * Returns `null` when the model has no registered price, or when a rate is
+ * missing for tokens that were actually spent. The previous version silently
+ * fell back to Claude Sonnet's table, so every DeepSeek, Kimi, Qwen and local
+ * run displayed a confidently wrong figure — and, because the fallback had no
+ * cache entry of its own, cache-read tokens were priced as if they were
+ * Anthropic's. Cache reads are billed and can outnumber uncached input many
+ * times over.
+ */
+export function calculateCost(
+  model: ModelId,
+  usage: Omit<TokenUsage, "estimatedCost" | "costCurrency">,
+  provider?: string,
+): { amount: number | null; currency: Currency | null; breakdown: CostBreakdown } {
+  const breakdown = computeCost(model, {
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadTokens: usage.cacheReadTokens,
+    cacheWriteTokens: usage.cacheWriteTokens,
+  }, provider);
+  return { amount: breakdown.total, currency: breakdown.currency, breakdown };
 }
 
-export function formatCost(usd: number): string {
-  if (usd < 0.001) return `<$0.001`;
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  return `$${usd.toFixed(3)}`;
+/** Currency-aware. An unknown cost says so rather than printing $0.000. */
+export function formatCost(amount: number | null, currency: Currency | null = "USD"): string {
+  return formatAmount(amount, currency);
 }
 
 export function formatTokens(n: number): string {

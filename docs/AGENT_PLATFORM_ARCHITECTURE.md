@@ -1,93 +1,28 @@
-# AllyCode Agent Platform Architecture
+# 任务运行与平台能力边界
 
-## Product boundary
+## 已实现的执行机制
 
-AllyCode is a local-first Agent platform, not a thin model chat client. A task is
-complete only when it produces a verified change, an artifact, or an evidence-backed
-report. Model APIs are interchangeable reasoning engines behind the task runtime.
+- 桌面历史按任务绑定项目路径、对话、计划、事件与检查点。
+- 执行任务生成可见步骤，支持分阶段工作、暂停及续接。
+- 主模型与辅助模型调用分别记录；用量与缓存以供应商实际返回为准。
+- 历史预算与压缩降低长上下文负担，压缩失败有诊断；阶段预算仍是安全边界，不承诺无限执行。
+- 计划勾选属于执行者声明；完成门禁与产物检查是独立证据，系统回执说明实际范围。
+- 新任务的自动记忆与对话隔离；需要继续工作时打开原任务。项目文件本身不因任务隔离而成为独立副本。
 
-## Runtime layers
+## 未接通与未承诺的能力
 
-1. **Desktop experience** — projects, tasks, conversations, plans, execution evidence,
-   memory, diffs, artifacts, permissions, and settings.
-2. **Task runtime** — durable task state, event journal, checkpoints, pause/resume,
-   retries, token budgets, completion conditions, and failure recovery.
-3. **Agent loop** — provider-neutral streaming, tool selection, parallel safe tool
-   execution, context management, and result verification.
-4. **Capability layer** — local files, shell, Git, web, research, MCP, skills, session
-   search, browser automation, delegation, scheduling, and artifact delivery.
-5. **Execution backends** — trusted host, persistent Docker/WSL, SSH, and future
-   microVM/cloud workers behind one interface.
-6. **Memory system** — active context, task checkpoints, full event history, project
-   knowledge, user preferences, semantic retrieval, and procedural skills.
-7. **Security and governance** — project path boundary, risk classification, explicit
-   network/write approval, sandbox policy, audit trail, secret redaction, and rollback.
+| 项目 | 当前边界 |
+|---|---|
+| 语义检索 | 模块及配置存在，主循环 system-prompt 入口直接加载任务记忆，未接通向量检索 |
+| 统一 TaskRuntime | 多入口共享大量底层模块，桌面仍有独立编排，不宣称所有入口完全一致 |
+| 企业身份与治理 | 本轮实现邮箱账号；SSO、RBAC、管理员策略、企业审计平台未完成 |
+| 云执行与多租户 | 不具备已验收的云端多租户隔离或微虚拟机后端 |
+| 任意软件操作 | 浏览器及系统桌面工具存在；平台可访问性、权限与沙箱会限制操作 |
+| 全行业识别 | 模型按资料推断结构；真实行业覆盖、OCR 准确率和语义正确性需独立测试 |
+| 发行与回滚 | 脚本存在；正式签名、大规模安装和跨版本回滚未完整验收 |
 
-## Durable task model
+## 本地与网络
 
-The SQLite database at `~/.allycode/agent-state.sqlite` uses WAL mode and contains:
+本地文件、任务存储与文档处理可在组件已准备后运行。云模型、联网搜索、邮件与首次组件下载需要相应网络服务。Docker 普通模式允许配置联网以满足构建需求，严格模式禁止联网；默认宿主回退关闭。凭据与真实任务数据不进入公开源码。
 
-- `projects`: stable logical project identities and the most recently opened path.
-- `project_paths`: path aliases, so a logical project can survive directory changes.
-- `tasks`: goal, session binding, status, checkpoint, failure, and revision metadata.
-- `task_events`: append-only execution evidence for messages, tools, permissions,
-  checkpoints, memory extraction, completion, and failure.
-- `task_event_search`: FTS5 index with a literal fallback for Chinese text.
-
-Active tasks left by a process crash are changed to `paused` on the next launch. They
-are never silently restarted. The user can inspect and resume them from the desktop.
-
-## Checkpoint contract
-
-- Persist the user goal before the first model request.
-- Persist canonical provider history after each completed model/tool iteration.
-- Persist permission requests and decisions before execution continues.
-- A pause aborts the active atomic operation, saves the last consistent history, and
-  leaves the task resumable.
-- Resume injects a continuation instruction into the saved canonical history. It does
-  not reconstruct state from a lossy UI transcript.
-- Completion saves usage, session history, a final checkpoint, and then extracts
-  durable memory.
-
-## Memory contract
-
-- **Working memory:** bounded current context and compaction summary.
-- **Task memory:** exact checkpoint, execution journal, failures, and permission state.
-- **Episodic memory:** searchable prior task events for the same project.
-- **Project memory:** architecture, constraints, decisions, and proven solutions.
-- **User memory:** stable preferences and working style, shared only where intended.
-- **Procedural memory:** on-demand skills for repeatable workflows.
-
-The system persists actions and decisions, not hidden model chain-of-thought. Recalled
-information is treated as evidence and is verified against the current workspace.
-
-## Domestic and private-network operation
-
-- First-class DeepSeek, Alibaba Qwen/DashScope, Moonshot/Kimi, local Ollama, and custom
-  OpenAI-compatible endpoints.
-- Self-hosted SearXNG can be placed inside a domestic network or enterprise intranet.
-- Search falls back through configured providers instead of assuming one public
-  service is reachable.
-- Semantic memory falls back to local TF-IDF when Ollama embeddings are unavailable.
-- Core file, task, memory, and sandbox workflows do not require an overseas service.
-
-## Sandbox policy
-
-Docker is one backend, not the entire architecture. Persistent task containers retain
-dependencies and workspace state across commands. The default hardened profile uses a
-non-root user, drops all Linux capabilities, enables `no-new-privileges`, applies CPU,
-memory and PID limits, uses a read-only container root, and mounts only the selected
-workspace. Strict mode also makes that workspace read-only and disables networking.
-
-If Docker is enabled but unavailable, AllyCode fails closed. Host fallback requires an
-explicit configuration choice. Future multi-tenant execution must use a stronger
-microVM or equivalent isolation boundary.
-
-## Planned platform increments
-
-1. Structured plan/todo state and completion criteria in the durable task engine.
-2. File snapshots, diff review, checkpoints, and one-click rollback.
-3. Browser automation, background processes, artifact registry, and downloads.
-4. General subagent delegation with isolated context and restricted capabilities.
-5. Schedules, retries, notification delivery, and unattended trusted workflows.
-6. Evaluation suites for coding, research, recovery, memory, and malicious projects.
+进一步边界与验证口径见 [公开版本说明](PUBLIC_RELEASE.md)。

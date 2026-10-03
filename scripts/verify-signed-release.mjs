@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-const releaseDirectory = path.resolve("release", "alpha.8");
+const releaseDirectory = path.resolve("release", "alpha.9");
 const entries = await fs.readdir(releaseDirectory, { withFileTypes: true });
 const executables = entries
   .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"))
@@ -38,7 +38,7 @@ if (!entries.some((entry) => /^latest.*\.yml$/i.test(entry.name))) {
 
 await fs.writeFile(
   path.join(releaseDirectory, "SHA256SUMS.json"),
-  JSON.stringify({ version: "0.10.0-alpha.8", generatedAt: new Date().toISOString(), files: manifest }, null, 2),
+  JSON.stringify({ version: "0.10.0-alpha.9", generatedAt: new Date().toISOString(), files: manifest }, null, 2),
   "utf8",
 );
 console.log(`签名验证通过，共验证 ${manifest.length} 个可执行文件；SHA-256 清单已生成。`);

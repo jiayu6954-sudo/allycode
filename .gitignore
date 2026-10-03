@@ -1,4 +1,7 @@
 # ── Video files — upload via GitHub Issue drag-and-drop instead ──────────────
+deploy/accounts/.env
+account-data/
+dist-account/
 # Embed the resulting CDN URL (github.com/user/repo/assets/...) in README.md.
 # This keeps the repo lightweight while videos play natively on GitHub.
 assets/demo/videos/
@@ -50,6 +53,11 @@ datasets/
 
 # ── Generated public-release staging ─────────────────────────────────────────
 open-source/
+.benchmark-results/
+.playwright-cli/
+.alpha*-smoke*/
+.alpha*-smoke.*
+.alpha*-vite.*
 
 # ── Claude Code source reference (local study copy, not part of this project) ─
 claude-code-main/
@@ -67,3 +75,17 @@ Thumbs.db
 # ── TypeScript cache ─────────────────────────────────────────────────────────
 *.tsbuildinfo
 node_modules
+
+# Public-source and local diagnostics boundaries
+!.env.example
+.tmp/
+.allycode/
+.allycode-eval/
+__pycache__/
+.venv/
+*.sqlite*
+*.db
+*.gguf
+*.safetensors
+docs/audits/
+docs/WORKFLOW.md

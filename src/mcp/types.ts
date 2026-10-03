@@ -51,6 +51,7 @@ export interface MCPToolResult {
 export interface MCPServerConfig {
   /** Logical name, used as tool namespace prefix (e.g. "notion" → "notion__search_page") */
   name: string;
+  enabled?: boolean;
   transport: "stdio" | "http";
   // stdio options
   command?: string;

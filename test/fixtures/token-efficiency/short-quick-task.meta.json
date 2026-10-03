@@ -1,0 +1,14 @@
+{
+  "name": "short-quick-task",
+  "klass": "short",
+  "messageCount": 13,
+  "assistantTurns": 6,
+  "toolResultBlocks": 11,
+  "reasoningTurns": 6,
+  "sha256": "b6575753e0411c888b43c4a2930987893636e3fbe691bf165fd9ce4796a6f774",
+  "redaction": "文本按字符类等长替换（汉字→文，数字→0，大写→A，小写→a），密钥/令牌/绝对用户路径先行整体屏蔽。保留消息结构、工具配对、长度与字符类分布。",
+  "sourceShape": {
+    "originalChars": 75592,
+    "fixtureChars": 78451
+  }
+}

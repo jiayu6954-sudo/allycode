@@ -1,9 +1,10 @@
 {
   "name": "@jiayu6954/allycode",
-  "version": "0.10.0-alpha.8",
+  "version": "0.11.0-alpha.22",
   "description": "AllyCode — a persistent, secure, multi-provider AI agent for desktop and terminal",
   "type": "module",
   "main": "dist-desktop/main.js",
+  "desktopName": "allycode.desktop",
   "bin": {
     "allycode": "dist/index.js"
   },
@@ -11,7 +12,8 @@
     "dist/",
     "dist-desktop/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "skill/sources-to-excel-complete/sources-to-excel/"
   ],
   "scripts": {
     "build:cli": "tsup && node scripts/add-shebang.mjs",
@@ -19,22 +21,33 @@
     "build:desktop:renderer": "vite build --config desktop/vite.config.ts",
     "build:desktop": "npm run generate:icon && node scripts/clean-desktop.mjs && npm run build:desktop:main && npm run build:desktop:renderer",
     "generate:icon": "node scripts/generate-icon.mjs",
-    "build": "npm run build:cli && npm run build:desktop",
+    "build": "npm run build:provenance && npm run build:cli && npm run build:desktop",
     "dev": "tsx src/index.ts",
     "dev:chat": "tsx src/index.ts chat",
     "desktop:dev:renderer": "vite --config desktop/vite.config.ts",
     "desktop": "npm run build:desktop && electron .",
     "desktop:package": "npm run build && electron-builder --win",
+    "desktop:linux": "npm run build && electron-builder --linux deb AppImage --x64 --publish never --config.directories.output=release/linux",
+    "build:accounts": "node scripts/build-accounts.mjs",
+    "accounts:start": "node dist-account/server.mjs",
     "desktop:release": "node scripts/preflight-release.mjs && npm run build && electron-builder --win --config electron-builder.release.yml --publish never && node scripts/verify-signed-release.mjs",
     "desktop:publish": "node scripts/publish-update-channel.mjs",
     "opensource:prepare": "node scripts/prepare-open-source.mjs",
     "opensource:package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-open-source.ps1",
+    "benchmark:provider": "tsx src/evals/provider-benchmark.ts",
     "test": "vitest",
     "test:run": "vitest run",
     "typecheck": "tsc --noEmit",
     "typecheck:desktop": "tsc --noEmit -p desktop/tsconfig.json",
     "prepublishOnly": "npm run build:cli && npm run typecheck",
-    "lint": "eslint src desktop test"
+    "lint": "eslint src desktop test",
+    "replay:context": "tsx src/evals/replay-context-cost.ts",
+    "fixtures:build": "tsx src/evals/build-fixtures.ts",
+    "h0:canary": "tsx src/evals/h0-canary.ts",
+    "h0:build": "tsup src/evals/h0-canary.ts --format esm --out-dir .tmp/h0 --clean=false",
+    "h0:canary:vault": "npm run h0:build && electron scripts/h0-dpapi-runner.cjs",
+    "build:provenance": "node scripts/build-provenance.mjs",
+    "desktop:local": "npm run build && node scripts/package-local.mjs"
   },
   "keywords": [
     "ai",
@@ -121,10 +134,45 @@
         "portable"
       ]
     },
+    "linux": {
+      "executableName": "allycode",
+      "syncDesktopName": true,
+      "icon": "desktop/assets/icon.png",
+      "category": "Office",
+      "target": ["deb", "AppImage"],
+      "artifactName": "AllyCode-${version}-${arch}.${ext}",
+      "desktop": { "entry": { "Name": "AllyCode", "Comment": "本地智能任务、文档与表格助手", "StartupWMClass": "AllyCode" } }
+    },
+    "deb": {
+      "maintainer": "AllyCode Team",
+      "depends": ["libgtk-3-0", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0", "gnome-keyring", "policykit-1", "python3 (>= 3.10)", "python3-venv", "python3-pyatspi", "python3-gi", "gir1.2-gtk-3.0", "at-spi2-core", "libreoffice-writer", "libreoffice-calc", "tesseract-ocr", "tesseract-ocr-chi-sim", "tesseract-ocr-eng", "fonts-noto-cjk", "fontconfig", "curl", "zstd", "xdotool"]
+    },
     "extraResources": [
+      {
+        "from": "account-service.json",
+        "to": "account-service.json"
+      },
       {
         "from": "update-sources.json",
         "to": "update-sources.json"
+      },
+      {
+        "from": "benchmarks/projects/binary-market-protocol-challenge",
+        "to": "benchmarks/projects/binary-market-protocol-challenge",
+        "filter": [
+          "**/*",
+          "!.challenge-results/**/*",
+          "!.allycode-eval/**/*"
+        ]
+      },
+      {
+        "from": "skill/sources-to-excel-complete/sources-to-excel",
+        "to": "skills/sources-to-excel",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/.venv/**"
+        ]
       }
     ]
   }

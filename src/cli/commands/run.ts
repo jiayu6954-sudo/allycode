@@ -1,4 +1,5 @@
-﻿/**
+import { runDurableTask } from "../../agent/task-runtime.js";
+/**
  * run command — non-interactive (headless/pipe) mode.
  *
  * Used when stdin or stdout is not a TTY (e.g. piped input, CI scripts).
@@ -29,24 +30,19 @@ export async function runCommand({ prompt, settings, opts }: RunCommandOptions):
   const [
     { createProvider },
     { buildSystemPrompt },
-    { runAgentLoop },
     { ToolRegistry },
     { PermissionManager },
-    { SessionStats },
   ] = await Promise.all([
     import("../../providers/index.js"),
     import("../../agent/system-prompt.js"),
-    import("../../agent/loop.js"),
     import("../../tools/registry.js"),
     import("../../permissions/manager.js"),
-    import("../../utils/stats.js"),
   ]);
 
   const provider    = createProvider(settings);
   const tools       = new ToolRegistry(cwd);
   // Headless mode: auto-approve all tool calls
   const permissions = new PermissionManager(settings, async () => "allow");
-  const stats       = new SessionStats();
   const systemPrompt = await buildSystemPrompt(cwd, null, settings);
 
   const ac = new AbortController();
@@ -64,8 +60,8 @@ export async function runCommand({ prompt, settings, opts }: RunCommandOptions):
   };
 
   try {
-    await runAgentLoop(
-      provider,
+    const result = await runDurableTask(
+      cwd, provider,
       {
         model:               settings.model,
         maxTokens:           settings.maxTokens,
@@ -73,6 +69,9 @@ export async function runCommand({ prompt, settings, opts }: RunCommandOptions):
         conversationHistory: [{ role: "user", content: [{ type: "text", text: prompt }] }],
         signal:              ac.signal,
         onEvent,
+        maxIterations: settings.executionBudget.maxModelTurnsPerRun,
+        historyBudget: { maxContextTokens: settings.context.maxContextTokens, keepRecentMessages: settings.context.keepRecentMessages },
+        toolBudget: { hardLimit: settings.executionBudget.maxToolCallsPerTask, priorToolCalls: 0 },
         tokenBudget: {
           warningThreshold: settings.tokenBudget.warningThreshold,
           hardLimit:        settings.tokenBudget.hardLimit,
@@ -81,8 +80,8 @@ export async function runCommand({ prompt, settings, opts }: RunCommandOptions):
       },
       tools,
       permissions,
-      stats,
     );
+    if (result.stopReason !== "end_turn") { process.stderr.write(`\nTask paused: ${result.stopReason}\n`); process.exitCode = result.stopReason === "aborted" ? 130 : 2; }
   } catch (err) {
     if ((err as Error)?.name !== "AbortError") {
       console.error((err as Error)?.message ?? String(err));

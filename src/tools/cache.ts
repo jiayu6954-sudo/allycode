@@ -96,6 +96,7 @@ export class ToolCache {
    * 所有涉及该路径的 file_read/grep 缓存条目失效。
    */
   invalidateForWrite(toolName: ToolName, input: unknown): void {
+    if (["sources_to_excel", "document_ocr", "document_format", "vision_analyze", "bash", "desktop_control", "browser_verify", "service_start"].includes(toolName)) { this.store.clear(); return; }
     if (!WRITE_TOOLS.has(toolName)) return;
 
     const writePath = extractPath(input);

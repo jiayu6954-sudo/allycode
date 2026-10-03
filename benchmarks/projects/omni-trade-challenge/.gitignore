@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+.challenge-results/
+data/
+*.log
+.env

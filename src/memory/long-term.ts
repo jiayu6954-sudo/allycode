@@ -70,17 +70,18 @@ function projectFingerprint(projectPath: string): string {
   return stableProjectFingerprint(projectPath);
 }
 
-function getMemoryPaths(projectPath: string): MemoryPaths {
+function getMemoryPaths(projectPath: string, sessionId?: string): MemoryPaths {
   const fp = projectFingerprint(projectPath);
   const legacyFp = crypto
     .createHash("sha1")
     .update(path.resolve(projectPath).toLowerCase())
     .digest("hex")
     .slice(0, 12);
-  const projectDir = path.join(MEMORY_ROOT, "projects", fp);
-  const legacyProjectDir = path.join(MEMORY_ROOT, "projects", legacyFp);
+  const scope = sessionId ? crypto.createHash("sha256").update(sessionId).digest("hex") : undefined;
+  const projectDir = scope ? path.join(MEMORY_ROOT, "tasks", fp, scope) : path.join(MEMORY_ROOT, "projects", fp);
+  const legacyProjectDir = scope ? projectDir : path.join(MEMORY_ROOT, "projects", legacyFp);
   return {
-    userFile:      path.join(MEMORY_ROOT, "user.md"),
+    userFile:      scope ? path.join(projectDir, "user.md") : path.join(MEMORY_ROOT, "user.md"),
     projectDir,
     contextFile:   path.join(projectDir, "context.md"),
     decisionsFile: path.join(projectDir, "decisions.md"),
@@ -111,8 +112,8 @@ async function readFileWithFallback(primary: string, legacy: string): Promise<st
  * Load all long-term memory for a given project.
  * Returns empty strings for memory that doesn't exist yet.
  */
-export async function loadLongTermMemory(projectPath: string): Promise<LongTermMemory> {
-  const paths = getMemoryPaths(projectPath);
+export async function loadLongTermMemory(projectPath: string, sessionId?: string): Promise<LongTermMemory> {
+  const paths = getMemoryPaths(projectPath, sessionId);
   const [user, projectContext, projectDecisions, projectLearnings] = await Promise.all([
     readFile(paths.userFile),
     readFileWithFallback(paths.contextFile, paths.legacyContextFile),
@@ -241,6 +242,7 @@ async function extractFromConversation(
 
   try {
     const handle = provider.stream({
+      purpose: "memory",
       model,
       maxTokens: EXTRACTION_MAX_TOKENS,
       systemPrompt: EXTRACTION_SYSTEM,
@@ -298,7 +300,8 @@ export async function extractAndSaveMemory(
   messages: ConversationMessage[],
   provider: AIProvider,
   model: string,
-  enabled = true
+  enabled = true,
+  sessionId?: string,
 ): Promise<boolean> {
   if (!enabled) {
     logger.debug("memory.extract.disabled");
@@ -309,8 +312,9 @@ export async function extractAndSaveMemory(
     return false;
   }
 
-  const paths = getMemoryPaths(projectPath);
-  const existing = await loadLongTermMemory(projectPath);
+  if (!sessionId) return false;
+  const paths = getMemoryPaths(projectPath, sessionId);
+  const existing = await loadLongTermMemory(projectPath, sessionId);
   const conversation = serializeConversation(messages);
 
   logger.debug("memory.extract.start", { chars: conversation.length });

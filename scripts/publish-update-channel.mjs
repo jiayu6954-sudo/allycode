@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const releaseDirectory = path.resolve("release", "alpha.8");
+const releaseDirectory = path.resolve("release", "alpha.9");
 const origins = [
   ["国内主源", process.env.ALLYCODE_PRIMARY_PUBLISH_URL, process.env.ALLYCODE_PRIMARY_PUBLISH_TOKEN],
   ["国内备用源", process.env.ALLYCODE_MIRROR_PUBLISH_URL, process.env.ALLYCODE_MIRROR_PUBLISH_TOKEN],

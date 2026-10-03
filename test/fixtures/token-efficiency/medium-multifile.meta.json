@@ -1,0 +1,18 @@
+{
+  "name": "medium-multifile",
+  "klass": "medium",
+  "messageCount": 121,
+  "assistantTurns": 60,
+  "toolResultBlocks": 78,
+  "reasoningTurns": 0,
+  "sha256": "067b842f0a7254ff150f2e21ba5c7deeec1ad372a5ab7ba9f0e6e364c81f4936",
+  "redaction": "文本按字符类等长替换（汉字→文，数字→0，大写→A，小写→a），密钥/令牌/绝对用户路径先行整体屏蔽。保留消息结构、工具配对、长度与字符类分布。",
+  "sourceShape": {
+    "originalChars": 219395,
+    "fixtureChars": 238631
+  },
+  "derivedFrom": {
+    "originalMessageCount": 274,
+    "truncatedToTurns": 60
+  }
+}

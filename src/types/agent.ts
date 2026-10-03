@@ -1,8 +1,13 @@
-﻿import type Anthropic from "@anthropic-ai/sdk";
-import type { NormalizedMessage } from "../providers/interface.js";
+import type Anthropic from "@anthropic-ai/sdk";
+import type { NormalizedMessage, ProviderTurnState } from "../providers/interface.js";
 
 // Canonical message shape for the conversation history (Anthropic format internally)
-export type ConversationMessage = Anthropic.MessageParam;
+export type ConversationMessage = Anthropic.MessageParam & {
+  /** Provider-owned state used only when continuing with the same protocol. */
+  providerState?: ProviderTurnState;
+  providerStateRef?: string;
+  steeringId?: string;
+};
 
 // Re-export for convenience
 export type { NormalizedMessage };
@@ -35,22 +40,46 @@ export type AgentPhase =
 
 // Events emitted by the agent loop to consumers (UI, stdout printer, tests)
 export type AgentEvent =
+  | { type: "user_steering"; id: string; text: string; createdAt: string }
   | { type: "status"; phase: AgentPhase; iteration: number; toolName?: string; toolId?: string; stopReason?: string }
+  | { type: "stream_signal"; signal: "text" | "thinking" | "tool"; iteration: number }
   | { type: "text_delta"; delta: string }
   | { type: "thinking_delta"; delta: string }
   | { type: "tool_pending"; toolName: string; toolId: string; input: unknown }
   | { type: "tool_start"; toolName: string; toolId: string; input: unknown }
-  | { type: "tool_result"; toolId: string; toolName: string; content: string; isError: boolean }
+  | { type: "tool_result"; toolId: string; toolName: string; content: string; isError: boolean; metadata?: import("./tools.js").ToolResult["metadata"] }
+  | { type: "plan_update"; items: import("./tools.js").PlanUpdateInput["items"]; explanation?: string }
   | { type: "tool_denied"; toolId: string; toolName: string }
-  | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }
+  | { type: "usage"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; purpose?: string; model?: string; estimatedCost?: number | null; costCurrency?: import("../utils/pricing.js").Currency | null }
+  | { type: "model_call"; record: import("../providers/model-gateway.js").ModelCallRecord }
   | { type: "done"; stopReason: string }
   | { type: "error"; error: Error }
   /** I026: Human-in-the-loop checkpoint — agent paused for user review */
   | { type: "checkpoint"; message: string }
   /** Streaming progress chunk emitted by long-running bash commands (native only) */
-  | { type: "tool_progress"; toolId: string; chunk: string };
+  | { type: "tool_progress"; toolId: string; chunk: string }
+  /** The resent working set was shrunk before a model call to control cost. */
+  | {
+      type: "context_budget";
+      beforeTokens: number;
+      afterTokens: number;
+      agedResults: number;
+      droppedMessages: number;
+      /** Canonical transcript length — unaffected by the budget. */
+      canonicalMessages: number;
+      /** Messages actually sent to the provider this turn. */
+      workingMessages: number;
+      /** Whether a narrative summary stands in for the dropped span. */
+      summarised: boolean;
+      /** Extra model calls spent writing summaries — they are not free. */
+      summaryModelCalls: number;
+    };
 
 export interface AgentLoopOptions {
+  readSteering?: () => import("../agent/steering.js").SteeringMessage[];
+  onSteeringApplied?: (messages: import("../agent/steering.js").SteeringMessage[]) => void | Promise<void>;
+  requirePlan?: boolean;
+  initialPlan?: import("./tools.js").PlanUpdateInput["items"];
   model: string;          // string, not ModelId — providers accept any model string
   maxTokens: number;
   systemPrompt: string;
@@ -72,20 +101,41 @@ export interface AgentLoopOptions {
     /** Tokens already consumed by prior submits in this session */
     priorTokens: number;
   };
+  /** Task-level tool guard; priorToolCalls includes resumed runs. */
+  toolBudget?: {
+    hardLimit: number;
+    priorToolCalls: number;
+  };
+  /** Caps the transcript resent on every turn. Omitted uses the shipped default. */
+  historyBudget?: Partial<import("../agent/history-budget.js").HistoryBudgetOptions>;
+  /** Set false to trim without summarising (cheaper, loses context). */
+  compactContext?: boolean;
+  modelCallPurpose?: "main" | "research";
+  compactionState?: import("../agent/context-compaction.js").CompactionState;
+  onCompactionChange?: (state: import("../agent/context-compaction.js").CompactionState) => void | Promise<void>;
 }
 
 export interface AgentLoopResult {
   finalMessage: NormalizedMessage;
   updatedHistory: ConversationMessage[];
   totalUsage: TokenUsage;
+  /** Why the loop returned. Budget boundaries are resumable, not failures. */
+  stopReason?: string;
+  /** Model turns consumed by this invocation. */
+  iterations?: number;
 }
 
 export interface TokenUsage {
+  unknownCalls?: number;
+  unknownReservedTokens?: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-  estimatedCostUsd: number;
+  /** null when the model has no registered price. Never a guessed number. */
+  estimatedCost: number | null;
+  /** Prices are per-provider; DeepSeek bills CNY, Anthropic USD. */
+  costCurrency: import("../utils/pricing.js").Currency | null;
 }
 
 /**
@@ -126,7 +176,8 @@ export type AgentMode = "interactive" | "pipe" | "headless";
 export interface StatusInfo {
   model: string;
   totalTokens: number;
-  estimatedCostUsd: number;
+  estimatedCost: number | null;
+  costCurrency: import("../utils/pricing.js").Currency | null;
   sessionId?: string;
   /** 0–100: % of hardLimit consumed; undefined when no hardLimit is set */
   budgetUsedPct?: number;

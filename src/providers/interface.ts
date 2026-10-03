@@ -17,6 +17,33 @@ export type NormalizedBlock =
   | { type: "text"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown };
 
+/**
+ * Opaque protocol state that must survive a tool round.
+ *
+ * This is deliberately provider-neutral at the agent boundary. Providers may
+ * use it to preserve reasoning/tool state without leaking protocol-specific
+ * fields into another provider's request.
+ */
+export type ProviderTurnState =
+  | {
+      protocol: "deepseek-chat";
+      scope?: ProviderStateScope;
+      reasoningContent?: string;
+    }
+  | {
+      protocol: "responses";
+      scope?: ProviderStateScope;
+      responseId?: string;
+      outputItems: unknown[];
+    };
+
+export interface ProviderStateScope {
+  provider: ProviderName;
+  protocol: ProviderProtocol;
+  model: string;
+  baseUrl: string;
+}
+
 export interface NormalizedMessage {
   stop_reason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
   content: NormalizedBlock[];
@@ -25,7 +52,9 @@ export interface NormalizedMessage {
     output_tokens: number;
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
+    reported?: boolean;
   };
+  providerState?: ProviderTurnState;
 }
 
 // ── Stream handle returned by provider.stream() ──────────────────────────────
@@ -52,6 +81,7 @@ export type ProviderName =
   | "custom";
 
 export interface StreamParams {
+  purpose?: "main" | "compaction" | "research" | "memory" | "diagnostics";
   model: string;
   maxTokens: number;
   systemPrompt: string;
@@ -60,7 +90,22 @@ export interface StreamParams {
   signal?: AbortSignal;
 }
 
+export type ProviderProtocol = "anthropic" | "chat_completions" | "responses";
+
+export interface ProviderCapabilities {
+  protocol: ProviderProtocol;
+  streaming: boolean;
+  toolCalls: "native" | "prompt_fallback" | "unsupported" | "unverified";
+  reasoning: "supported" | "unsupported" | "unverified";
+  vision: "supported" | "unsupported" | "unverified";
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  source: "official" | "provider" | "probe" | "fallback";
+  notes: string[];
+}
+
 export interface AIProvider {
   readonly providerName: ProviderName;
+  readonly protocol?: ProviderProtocol;
   stream(params: StreamParams): ProviderStreamHandle;
 }

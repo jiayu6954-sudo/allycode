@@ -13,6 +13,7 @@
  *
  * Uses native fetch — no openai npm package needed.
  */
+import { ProviderFailure } from "./failure-diagnostics.js";
 import type {
   AIProvider,
   ProviderName,
@@ -25,6 +26,8 @@ import type {
 import type { ConversationMessage } from "../types/agent.js";
 import type { ToolDefinition } from "../types/tools.js";
 import { logger } from "../utils/logger.js";
+import { normalizeProviderModelId } from "./model-id.js";
+import { providerHttpErrorHint } from "./http-error.js";
 
 // ── Predefined provider endpoints ─────────────────────────────────────────────
 
@@ -36,6 +39,8 @@ export interface OAIProviderPreset {
   /** Hard cap on max_tokens for this provider (undefined = no cap) */
   maxTokensLimit?: number;
   maxTokensParameter?: "max_tokens" | "max_completion_tokens";
+  contextWindow?: number;
+  maxOutputTokens?: number;
 }
 
 export const PROVIDER_PRESETS: Record<string, OAIProviderPreset> = {
@@ -50,8 +55,9 @@ export const PROVIDER_PRESETS: Record<string, OAIProviderPreset> = {
     name: "deepseek",
     baseUrl: "https://api.deepseek.com/v1",
     envKey: "DEEPSEEK_API_KEY",
-    defaultModel: "deepseek-chat",
-    maxTokensLimit: 8192,
+    defaultModel: "deepseek-flash",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 384_000,
   },
   qwen: {
     name: "qwen",
@@ -89,8 +95,10 @@ export const PROVIDER_PRESETS: Record<string, OAIProviderPreset> = {
     name: "moonshot",
     baseUrl: "https://api.moonshot.cn/v1",
     envKey: "MOONSHOT_API_KEY",
-    defaultModel: "moonshot-v1-8k",
-    maxTokensLimit: 8192,
+    defaultModel: "kimi-k3",
+    maxTokensParameter: "max_completion_tokens",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 1_048_576,
   },
 };
 
@@ -104,15 +112,21 @@ interface OAIToolCall {
 
 interface OAIMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string | null;
+  content: string | Array<Record<string, unknown>> | null;
   tool_calls?: OAIToolCall[];
   tool_call_id?: string;
+  reasoning_content?: string;
 }
 
 interface OAIUsage {
   prompt_tokens: number;
   completion_tokens: number;
   prompt_tokens_details?: { cached_tokens?: number };
+  /** Kimi returns automatic prefix-cache usage at the top level. */
+  cached_tokens?: number;
+  /** DeepSeek's automatic context-cache counters. */
+  prompt_cache_hit_tokens?: number;
+  prompt_cache_miss_tokens?: number;
 }
 
 interface OAIChunk {
@@ -150,11 +164,27 @@ function toOAITool(def: ToolDefinition): object {
  */
 function toOAIMessages(
   systemPrompt: string,
-  messages: ConversationMessage[]
+  messages: ConversationMessage[],
+  expectedStateScope?: import("./interface.js").ProviderStateScope,
+  hasTools = false,
 ): OAIMessage[] {
   const result: OAIMessage[] = [{ role: "system", content: systemPrompt }];
 
-  for (const msg of messages) {
+  // A legacy transcript or a provider switch cannot replay missing private
+  // state. Rebase the affected prefix as labelled historical data instead.
+  let rebaseThrough = -1;
+  if (hasTools && expectedStateScope?.provider === "deepseek") {
+    messages.forEach((msg, index) => {
+      if (msg.role === "assistant" && !(msg.providerState?.protocol === "deepseek-chat" && providerScopesMatch(msg.providerState.scope, expectedStateScope) && typeof msg.providerState.reasoningContent === "string")) rebaseThrough = index;
+    });
+    while (rebaseThrough >= 0 && messages[rebaseThrough + 1]?.role === "user" && Array.isArray(messages[rebaseThrough + 1]?.content) && (messages[rebaseThrough + 1]!.content as Array<{type: string}>).some((block) => block.type === "tool_result")) rebaseThrough++;
+  }
+  if (rebaseThrough >= 0) {
+    result.push({ role: "user", content: "[历史续接状态不可用。以下是历史记录数据，助手声称的完成不代表验收通过；从此建立新上下文。]\n" + messages.slice(0, rebaseThrough + 1).map((msg) => JSON.stringify({ role: msg.role, content: msg.content })).join("\n") });
+  }
+  for (const msg of messages.slice(rebaseThrough + 1)) {
+    const reasoningContent = hasTools && msg.providerState?.protocol === "deepseek-chat" && providerScopesMatch(msg.providerState.scope, expectedStateScope) ? msg.providerState.reasoningContent : undefined;
+    const reasoning = reasoningContent !== undefined ? { reasoning_content: reasoningContent } : {};
     if (msg.role === "user") {
       if (typeof msg.content === "string") {
         result.push({ role: "user", content: msg.content });
@@ -163,6 +193,7 @@ function toOAIMessages(
 
       const toolResults: OAIMessage[] = [];
       const textParts: string[] = [];
+      const imageParts: Array<Record<string, unknown>> = [];
 
       for (const block of msg.content) {
         if (block.type === "tool_result") {
@@ -180,16 +211,19 @@ function toOAIMessages(
           });
         } else if (block.type === "text") {
           textParts.push(block.text);
+        } else if (block.type === "image") {
+          const source = block.source;
+          imageParts.push({ type: "image_url", image_url: { url: source.type === "base64" ? `data:${source.media_type};base64,${source.data}` : source.url } });
         }
       }
 
       result.push(...toolResults);
-      if (textParts.length > 0) {
-        result.push({ role: "user", content: textParts.join("\n") });
+      if (textParts.length > 0 || imageParts.length > 0) {
+        result.push({ role: "user", content: imageParts.length ? [{ type: "text", text: textParts.join("\n") }, ...imageParts] : textParts.join("\n") });
       }
     } else if (msg.role === "assistant") {
       if (typeof msg.content === "string") {
-        result.push({ role: "assistant", content: msg.content });
+        result.push({ role: "assistant", content: msg.content, ...reasoning });
         continue;
       }
 
@@ -209,11 +243,13 @@ function toOAIMessages(
               type: "function" as const,
               function: { name: b.name, arguments: JSON.stringify(b.input) },
             })),
+          ...reasoning,
         });
       } else {
         result.push({
           role: "assistant",
           content: textBlocks.map((b) => (b.type === "text" ? b.text : "")).join(""),
+          ...reasoning,
         });
       }
     }
@@ -297,6 +333,7 @@ async function* parseSSE(
 
 export class OpenAICompatibleProvider implements AIProvider {
   readonly providerName: ProviderName;
+  readonly protocol = "chat_completions" as const;
 
   constructor(
     private baseUrl: string,
@@ -304,6 +341,10 @@ export class OpenAICompatibleProvider implements AIProvider {
     providerName: ProviderName,
     private maxTokensLimit?: number
     , private maxTokensParameter: "max_tokens" | "max_completion_tokens" = "max_tokens"
+    , private options: {
+      reasoningMode?: "auto" | "enabled" | "disabled";
+      reasoningEffort?: "low" | "low" | "high" | "max";
+    } = {}
   ) {
     this.providerName = providerName;
   }
@@ -317,6 +358,8 @@ export class OpenAICompatibleProvider implements AIProvider {
       this.apiKey,
       { ...params, maxTokens: clamped },
       this.maxTokensParameter,
+      this.providerName,
+      this.options,
     );
   }
 }
@@ -345,6 +388,11 @@ class OAIStreamHandle implements ProviderStreamHandle {
     private apiKey: string,
     private params: StreamParams,
     private maxTokensParameter: "max_tokens" | "max_completion_tokens",
+    private providerName: ProviderName,
+    private options: {
+      reasoningMode?: "auto" | "enabled" | "disabled";
+      reasoningEffort?: "low" | "low" | "high" | "max";
+    },
   ) {}
 
   async *deltas(): AsyncIterable<NormalizedDelta> {
@@ -443,11 +491,19 @@ class OAIStreamHandle implements ProviderStreamHandle {
   }
 
   private async runStream(): Promise<void> {
-    const messages = toOAIMessages(this.params.systemPrompt, this.params.messages);
+    const wireModel = normalizeProviderModelId(this.providerName, this.params.model);
+    if (this.providerName === "deepseek" && wireModel === "deepseek-v4-pro" && this.params.messages.some((message) => Array.isArray(message.content) && message.content.some((block) => block.type === "image"))) throw new Error("DeepSeek V4 Pro 不支持图像输入，请切换 deepseek-flash。");
+    const stateScope = {
+      provider: this.providerName,
+      protocol: "chat_completions" as const,
+      model: wireModel,
+      baseUrl: normalizeProviderBaseUrl(this.baseUrl),
+    };
+    const messages = toOAIMessages(this.params.systemPrompt, this.params.messages, stateScope, this.params.tools.length > 0);
     const tools = this.params.tools.map(toOAITool);
 
     const body: Record<string, unknown> = {
-      model: this.params.model,
+      model: wireModel,
       stream: true,
       messages,
     };
@@ -458,7 +514,19 @@ class OAIStreamHandle implements ProviderStreamHandle {
       body["tool_choice"] = "auto";
     }
 
-    logger.debug("oai.stream.start", { model: this.params.model, baseUrl: this.baseUrl });
+    if (this.providerName === "deepseek") {
+      if (this.options.reasoningMode && this.options.reasoningMode !== "auto") {
+        body["thinking"] = { type: this.options.reasoningMode };
+      }
+      if (this.options.reasoningEffort) {
+        body["reasoning_effort"] = this.options.reasoningEffort;
+      }
+    }
+    if (this.providerName === "moonshot" && wireModel === "kimi-k3" && this.options.reasoningEffort) {
+      body["reasoning_effort"] = this.options.reasoningEffort;
+    }
+
+    logger.debug("oai.stream.start", { model: wireModel, baseUrl: this.baseUrl });
 
     const response = await fetch(`${this.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
@@ -479,19 +547,13 @@ class OAIStreamHandle implements ProviderStreamHandle {
         if (parsed?.error?.message) detail = parsed.error.message;
       } catch { /* keep raw text */ }
 
-      // Translate common HTTP codes into actionable messages
-      let hint = "";
-      if (response.status === 402) {
-        hint = "\n→ API account has insufficient balance. Please top up your account.";
-      } else if (response.status === 401) {
-        hint = "\n→ Invalid API key. Check your key in Settings.";
-      } else if (response.status === 429) {
-        hint = "\n→ Rate limit reached. Wait a moment and try again.";
-      } else if (response.status === 503 || response.status === 529) {
-        hint = "\n→ Provider is temporarily overloaded. Try again shortly.";
-      }
+      const localizedHint = providerHttpErrorHint(response.status);
+      const modelPermissionHint = response.status === 404 && this.providerName === "moonshot" && wireModel === "kimi-k3"
+        ? "Kimi K3 需要开放平台账户完成实际充值并获得模型权限；请刷新模型列表确认当前账户是否可见 kimi-k3。"
+        : localizedHint;
+      const hint = modelPermissionHint ? `\n→ ${modelPermissionHint}` : "";
 
-      throw new Error(`${this.params.model} API error ${response.status}: ${detail}${hint}`);
+      throw new ProviderFailure(`${wireModel} API error ${response.status}: ${detail}${hint}`,{code:"http_error",httpStatus:response.status,usageReported:false});
     }
 
     if (!response.body) throw new Error("Empty response body");
@@ -565,8 +627,11 @@ class OAIStreamHandle implements ProviderStreamHandle {
       });
     }
     if (content.length === 0) {
-      throw new Error(
+      const cached = this.finalUsage?.prompt_tokens_details?.cached_tokens ?? this.finalUsage?.prompt_cache_hit_tokens ?? this.finalUsage?.cached_tokens ?? 0;
+      throw new ProviderFailure(
         "Provider returned an empty response. Check the model name, endpoint, and API credentials.",
+        {code:this.accThinking ? this.finishReason === "length" ? "reasoning_only_limit" : "reasoning_only_response" : "empty_response",hasReasoning:Boolean(this.accThinking),finishReason:["stop","length","tool_calls","content_filter"].includes(this.finishReason??"") ? this.finishReason as "stop"|"length"|"tool_calls"|"content_filter" : "unknown",usageReported:this.finalUsage!==null},
+        this.finalUsage ? {reported:true,input_tokens:Math.max(0,this.finalUsage.prompt_tokens-cached),output_tokens:this.finalUsage.completion_tokens,cache_read_input_tokens:cached} : undefined,
       );
     }
 
@@ -576,18 +641,52 @@ class OAIStreamHandle implements ProviderStreamHandle {
     else if (this.finishReason === "length") stopReason = "max_tokens";
     else if (this.finishReason === "stop") stopReason = "end_turn";
 
-    const cached = this.finalUsage?.prompt_tokens_details?.cached_tokens ?? 0;
+    const cached = this.finalUsage?.prompt_tokens_details?.cached_tokens
+      ?? this.finalUsage?.prompt_cache_hit_tokens
+      ?? this.finalUsage?.cached_tokens
+      ?? 0;
 
     return {
       stop_reason: stopReason,
       content,
       usage: {
-        input_tokens: (this.finalUsage?.prompt_tokens ?? 0) - cached,
+        reported: this.finalUsage != null,
+        input_tokens: Math.max(0, (this.finalUsage?.prompt_tokens ?? 0) - cached),
         output_tokens: this.finalUsage?.completion_tokens ?? 0,
         cache_read_input_tokens: cached > 0 ? cached : undefined,
       },
+      ...(["deepseek", "moonshot"].includes(this.providerName)
+        ? {
+            providerState: {
+              protocol: "deepseek-chat" as const,
+              scope: {
+                provider: this.providerName,
+                protocol: "chat_completions" as const,
+                model: normalizeProviderModelId(this.providerName, this.params.model),
+                baseUrl: normalizeProviderBaseUrl(this.baseUrl),
+              },
+              reasoningContent: this.accThinking,
+            },
+          }
+        : {}),
     };
   }
+}
+
+function normalizeProviderBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/, "").toLowerCase();
+}
+
+function providerScopesMatch(
+  actual: import("./interface.js").ProviderStateScope | undefined,
+  expected: import("./interface.js").ProviderStateScope | undefined,
+): boolean {
+  if (!actual || !expected) return false;
+  return actual.provider === expected.provider &&
+    actual.protocol === expected.protocol &&
+    normalizeProviderModelId(actual.provider, actual.model) ===
+      normalizeProviderModelId(expected.provider, expected.model) &&
+    normalizeProviderBaseUrl(actual.baseUrl) === normalizeProviderBaseUrl(expected.baseUrl);
 }
 
 /**

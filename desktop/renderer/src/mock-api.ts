@@ -1,4 +1,5 @@
 import type { AllyCodeSettings } from "../../../src/config/schema.js";
+import {toDesktopMessages} from "../../conversation-view.js";
 import type {
   AllyCodeDesktopApi,
   DesktopAgentEvent,
@@ -12,7 +13,7 @@ const listeners = new Set<(event: DesktopAgentEvent) => void>();
 const updateListeners = new Set<Parameters<AllyCodeDesktopApi["onUpdateState"]>[0]>();
 let updateState: Awaited<ReturnType<AllyCodeDesktopApi["getUpdateState"]>> = {
   status: "idle",
-  currentVersion: "0.10.0-alpha.8",
+  currentVersion: "0.11.0-alpha.5",
   message: "可手动检查新版本；不会在后台自动下载。",
 };
 const activeRuns = new Map<string, { taskId: string; timers: number[] }>();
@@ -33,10 +34,32 @@ const credentialStatus: Awaited<
 
 const settings: AllyCodeSettings = {
   provider: "deepseek",
-  model: "deepseek-chat",
+  model: "deepseek-v4-pro",
   maxTokens: 32000,
+  providerProtocol: "auto",
+  reasoning: { mode: "auto", effort: "auto" },
   tokenBudget: { warningThreshold: 80 },
+  executionBudget: {
+    maxModelTurnsPerRun: 80,
+    maxToolCallsPerRun: 300,
+    enforceTaskLimits: false,
+    maxModelTurnsPerTask: 160,
+    maxToolCallsPerTask: 300,
+  },
+  agentEngine: {
+    mode: "auto",
+    fallbackToNative: true,
+    codexCommand: "codex",
+    deepseekHarnessCommand: "dsh",
+  },
   defaultPermissions: {
+    verification_status: "auto",
+    phase_checkpoint: "auto",
+    sources_to_excel: "auto",
+    document_ocr: "auto",
+    document_verify: "auto",
+    document_format: "auto",
+    vision_analyze: "auto",
     bash: "ask",
     file_write: "ask",
     file_edit: "ask",
@@ -46,12 +69,25 @@ const settings: AllyCodeSettings = {
     web_fetch: "ask",
     web_search: "auto",
     session_search: "auto",
+    evidence_read: "auto",
+    desktop_control: "ask",
+    plan_update: "auto",
     git_commit: "ask",
     spawn_research: "auto",
+    service_start: "ask",
+    service_status: "auto",
+    service_stop: "auto",
+    browser_verify: "ask",
   },
   customRules: [],
   ui: { theme: "light", showThinking: false, showTokenCount: true, showCost: true },
-  context: { maxHistoryMessages: 50, compactionThreshold: 80, claudeMdPaths: [] },
+  context: {
+    maxHistoryMessages: 50,
+    compactionThreshold: 80,
+    claudeMdPaths: [],
+    maxContextTokens: 60_000,
+    keepRecentMessages: 20,
+  },
   memory: {
     enabled: true,
     maxConversationChars: 12000,
@@ -87,7 +123,7 @@ const settings: AllyCodeSettings = {
 
 const sessions: SessionSummary[] = [
   { id: "demo-1", title: "修复模型流式响应错误", updatedAt: new Date().toISOString(), cwd: "D:\\Projects\\allycode", model: "claude-sonnet-4-6" },
-  { id: "demo-2", title: "规划桌面端记忆链路", updatedAt: new Date(Date.now() - 3_600_000).toISOString(), cwd: "D:\\Projects\\allycode", model: "claude-sonnet-4-6" },
+  { id: "demo-2", title: "修复模型流式响应错误", updatedAt: new Date(Date.now() - 3_600_000).toISOString(), cwd: "E:\\Workspaces\\客户项目\\库存管理", model: "claude-sonnet-4-6" },
   { id: "demo-3", title: "检查项目安全边界", updatedAt: new Date(Date.now() - 86_400_000).toISOString(), cwd: "D:\\Projects\\allycode", model: "claude-sonnet-4-6" },
 ];
 
@@ -99,9 +135,9 @@ const tasks: TaskSummary[] = [
     updatedAt: new Date().toISOString(), resumable: false,
   },
   {
-    id: "task-demo-2", projectId: "mock-project", sessionId: "demo-2",
-    title: "规划桌面端记忆链路", goal: "规划桌面端记忆链路", status: "paused",
-    cwd: "D:\\Projects\\allycode", createdAt: new Date(Date.now() - 7_200_000).toISOString(),
+    id: "task-demo-2", projectId: "mock-inventory", sessionId: "demo-2",
+    title: "修复模型流式响应错误", goal: "修复模型流式响应错误", status: "paused",
+    cwd: "E:\\Workspaces\\客户项目\\库存管理", createdAt: new Date(Date.now() - 7_200_000).toISOString(),
     updatedAt: new Date(Date.now() - 3_600_000).toISOString(), resumable: true,
   },
   {
@@ -151,11 +187,124 @@ export function createMockDesktopApi(): AllyCodeDesktopApi {
     credentialStatus.moonshot = false;
   }
   return {
+    async accountState() {return new URLSearchParams(window.location.search).has("account-preview")?{configured:true,serviceUrl:"https://preview.invalid"}:{configured:false};},
+    async accountSend() {throw new Error("预览不发送邮件，请使用已配置服务的桌面应用。");},
+    async accountVerify() {throw new Error("预览不创建真实账号。");},
+    async accountLogout() {return {configured:false};},
+    async accountDelete() {return {configured:false};},
+    async setupState() {return {platform:"preview",installing:false,items:[{id:"documents",title:"Word、PDF 与 Excel 计算",ready:false,detail:"预览模式：未检测本机组件。"},{id:"vision",title:"完整视觉理解",ready:false,detail:"请在桌面应用中安装视觉组件。"}]};},
+    async installComponents() {throw new Error("预览不执行安装，请打开桌面应用。");},
+    async visionStatus() {return {directory:"预览模式：未访问本机模型",ready:false,busy:false,phase:"missing",message:"此页面是界面预览，不代表模型已安装。",downloadedBytes:0,totalBytes:9900000000,models:{qwen:"Qwen3.5-9B Q4_K_M",paddle:"PaddleOCR-VL-1.6 GGUF"}};},
+    async visionInstall() {throw new Error("预览模式不执行模型下载，请在桌面应用中安装。");},
+    async visionCancel() {},
+    async importVisionFiles() {return ["AllyCode资料/预览样本.png"];},
+    async workbenchAction() { return {message: "预览环境：工作台演示，不执行本机安装或文件修改。", snapshots: []}; },
     async getSettings() {
       return structuredClone(settings);
     },
     async getCredentialStatus() {
       return structuredClone(credentialStatus);
+    },
+    async inspectAgentEngines() {
+      const checkedAt = new Date().toISOString();
+      return [
+        {
+          engine: {
+            contractVersion: 1,
+            id: "native",
+            name: "AllyCode 原生引擎",
+            summary: "内置模型、记忆、Skills、MCP 与沙箱主链路。",
+            maturity: "stable",
+            capabilities: { streaming: true, resume: true, tools: true, skills: true, mcp: true, sandbox: true, trace: true, externalRuntime: false },
+          },
+          state: "ready",
+          selectable: true,
+          version: "0.11.0-alpha.5",
+          detail: "内置运行时已就绪。",
+          checkedAt,
+        },
+        {
+          engine: {
+            contractVersion: 1,
+            id: "codex",
+            name: "Codex 引擎",
+            summary: "使用本机 Codex CLI。",
+            maturity: "beta",
+            capabilities: { streaming: true, resume: false, tools: true, skills: true, mcp: true, sandbox: true, trace: true, externalRuntime: true },
+          },
+          state: "needs_auth",
+          selectable: false,
+          version: "codex-cli 0.149.0",
+          detail: "已安装，但 Codex 尚未登录。",
+          checkedAt,
+        },
+        {
+          engine: {
+            contractVersion: 1,
+            id: "deepseek-harness",
+            name: "DeepSeek Harness",
+            summary: "开发预览版隔离适配。",
+            maturity: "developer-preview",
+            capabilities: { streaming: true, resume: true, tools: true, skills: true, mcp: false, sandbox: true, trace: true, externalRuntime: true },
+          },
+          state: "not_installed",
+          selectable: false,
+          detail: "未安装 DeepSeek Harness。",
+          checkedAt,
+        },
+      ];
+    },
+    async getBenchmarkLab(workspace) {
+      return {
+        id: "binary-market-protocol-agent-challenge",
+        title: "Binary Market Protocol 工业级盲测",
+        description: "基于公开高预算真实需求改编：从零交付 Solana/Anchor 合约、索引 API、React 前端、预言机结算与安全测试。",
+        preparedWorkspace: workspace,
+        principles: ["模型、Agent 引擎和验收器分别记录。", "评分器位于项目目录外。", "只采信可复跑证据。"],
+      };
+    },
+    async prepareBenchmarkWorkspace() {
+      return { canceled: false, workspace: "D:\\Projects\\AllyCode-Binary-Market-Challenge" };
+    },
+    async runBenchmark() {
+      return {
+        challenge: "binary-market-protocol-agent-challenge",
+        generatedAt: new Date().toISOString(),
+        score: 84,
+        total: 100,
+        boundary: "本分数仅覆盖固定本地合同。",
+        results: [
+          { id: "startup", section: "基础运行", points: 10, earned: 10, passed: true, detail: "API 与 Web 均已启动" },
+          { id: "webhook", section: "Webhook", points: 10, earned: 4, passed: false, detail: "重复事件处理不完整" },
+        ],
+      };
+    },
+    async listSkills() {
+      return [
+        {
+          id: "debug-workflow",
+          name: "调试工作流",
+          triggers: ["调试", "报错", "debug"],
+          body: "先定位错误与根因，再做最小修改并运行相关测试。",
+          enabled: true,
+        },
+      ];
+    },
+    async saveSkill(skill) {
+      return [structuredClone(skill)];
+    },
+    async deleteSkill() {
+      return [];
+    },
+    async openSkillsFolder() {},
+    async testMcpServers(servers) {
+      return servers.map((server) => ({
+        name: server.name,
+        ok: true,
+        toolCount: 2,
+        tools: ["read_project", "search_docs"],
+        latencyMs: 86,
+      }));
     },
     async saveSettings(next) {
       Object.assign(settings, structuredClone(next));
@@ -188,15 +337,63 @@ export function createMockDesktopApi(): AllyCodeDesktopApi {
       return {
         provider: next.provider,
         model: next.model,
+        capability: {
+          level: configured ? "agent_ready" : "unavailable",
+          protocol: next.providerProtocol === "responses"
+            ? "responses"
+            : next.provider === "anthropic"
+              ? "anthropic"
+              : "chat_completions",
+          nativeToolRoundtrip: configured,
+          source: "live_probe",
+        },
         ok: configured,
         testedAt: now,
         stages: configured ? [
           { stage: "configuration", ok: true, message: "配置字段有效，Provider 已创建。", latencyMs: 1 },
-          { stage: "connectivity", ok: true, message: "接口可达（HTTP 200）。", latencyMs: 62 },
+          { stage: "model_discovery", ok: true, message: "模型列表读取成功（HTTP 200）。", latencyMs: 62 },
           { stage: "chat", ok: true, message: "基础流式对话成功并返回文本。", latencyMs: 410 },
           { stage: "tool_call", ok: true, message: "模型成功生成结构化工具调用。", latencyMs: 530 },
+          { stage: "tool_result_roundtrip", ok: true, message: "工具结果回传与第二轮续接成功。", latencyMs: 360 },
         ] : [{ stage: "configuration", ok: false, message: "未配置此供应商的 API 密钥。" }],
         fieldErrors: configured ? {} : { credential: "未配置此供应商的 API 密钥。" },
+      };
+    },
+    async listProviderModels(next) {
+      const ids = next.provider === "deepseek"
+        ? ["deepseek-v4-flash", "deepseek-v4-pro"]
+        : [next.model];
+      return {
+        provider: next.provider,
+        retrieval: "live",
+        fetchedAt: new Date().toISOString(),
+        models: ids.map((id) => {
+          const official = next.provider === "deepseek" && id.startsWith("deepseek-v4-");
+          const protocol = next.provider === "anthropic"
+            ? "anthropic" as const
+            : next.provider === "openai"
+              ? "responses" as const
+              : "chat_completions" as const;
+          return {
+            id,
+            provider: next.provider,
+            source: "live" as const,
+            verification: official ? "official" as const : "provider-listed" as const,
+            protocols: official
+              ? ["chat_completions" as const, "anthropic" as const]
+              : [protocol],
+            capabilities: {
+              protocol,
+              streaming: true,
+              toolCalls: official ? "native" as const : "unverified" as const,
+              reasoning: official ? "supported" as const : "unverified" as const,
+              vision: "unverified" as const,
+              ...(official ? { contextWindow: 1_000_000, maxOutputTokens: 384_000 } : {}),
+              source: official ? "official" as const : "provider" as const,
+              notes: [],
+            },
+          };
+        }),
       };
     },
     async openProviderConsole() {},
@@ -206,7 +403,7 @@ export function createMockDesktopApi(): AllyCodeDesktopApi {
     async checkForUpdates() {
       updateState = {
         status: "up-to-date",
-        currentVersion: "0.10.0-alpha.8",
+        currentVersion: "0.11.0-alpha.5",
         message: "当前已是最新版本。",
       };
       for (const listener of updateListeners) listener(structuredClone(updateState));
@@ -234,7 +431,15 @@ export function createMockDesktopApi(): AllyCodeDesktopApi {
     async listSessions() {
       return structuredClone(sessions);
     },
-    async loadSession() {
+    async loadSession(id) {
+      if (id !== "demo-1") return toDesktopMessages([
+        {role:"user",content:id === "demo-2" ? "检查库存项目的数据保存。" : "检查安全边界。"},
+        {role:"assistant",content:[{type:"tool_use",id:"saved-plan",name:"plan_update",input:{items:[{step:"核对项目文件",status:"completed"},{step:"运行自动化检查",status:"in_progress"}]}}]},
+        {role:"user",content:[{type:"tool_result",tool_use_id:"saved-plan",content:"已保存"}]},
+        {role:"assistant",content:[{type:"tool_use",id:"saved-check",name:"bash",input:{command:"npm test"}}]},
+        {role:"user",content:[{type:"tool_result",tool_use_id:"saved-check",content:"库存保存测试未通过，需修复。",is_error:true}]},
+        {role:"assistant",content:"检查结果已保存，可继续修复。"},
+      ]);
       return structuredClone(savedMessages);
     },
     async exportSession(id) {
@@ -282,6 +487,65 @@ export function createMockDesktopApi(): AllyCodeDesktopApi {
     },
     async listTasks(cwd) {
       return structuredClone(cwd ? tasks.filter((task) => task.cwd === cwd) : tasks);
+    },
+    async getMonitorReport(taskId) {
+      const task = tasks.find((item) => item.id === taskId) ?? tasks[0]!;
+      const now = Date.now();
+      return {
+        nextAfterId: 18,
+        report: {
+          schemaVersion: 1,
+          generatedAt: new Date().toISOString(),
+          task: {
+            id: task.id,
+            title: task.title,
+            goal: task.goal,
+            status: task.status,
+            createdAt: task.createdAt,
+            updatedAt: task.updatedAt,
+            provider: "deepseek",
+            model: "deepseek-v4-pro",
+            protocol: "chat_completions",
+          },
+          metrics: {
+            eventCount: 18, analyzedEventCount: 18, runCount: 1, durationMs: 28_400, modelTurns: 4,
+            firstSignalMs: 820, toolCalls: 6, toolSuccesses: 5, toolErrors: 1,
+            toolDenied: 0, permissionRequests: 1, planUpdates: 3,
+            completedPlanItems: 3, totalPlanItems: 3, checkpoints: 4, recoveries: 0,
+            inputTokens: 18_420, outputTokens: 2_610, cacheReadTokens: 9_200,
+            cacheWriteTokens: 0, cacheReadRate: 0.33, failureIncidents: 0,
+          },
+          currentPlan: [
+            { step: "读取项目结构与业务规则", status: "completed" },
+            { step: "修复价格计算并补充测试", status: "completed" },
+            { step: "运行完整验证并汇报证据", status: "completed" },
+          ],
+          scores: [
+            { dimension: "completion", label: "任务完成度", score: 100, status: "measured", evidence: "任务已完成；仍需结合告警判断质量。" },
+            { dimension: "planning", label: "计划一致性", score: 100, status: "measured", evidence: "3/3 个计划步骤完成。" },
+            { dimension: "tools", label: "工具可靠性", score: 83, status: "measured", evidence: "5 成功、1 失败。" },
+            { dimension: "evidence", label: "证据完整性", score: 100, status: "measured", evidence: "检测到写入后的测试命令。" },
+            { dimension: "continuity", label: "记忆与恢复", score: 100, status: "measured", evidence: "4 个检查点。" },
+            { dimension: "safety", label: "安全与授权", score: 100, status: "measured", evidence: "1 次授权请求。" },
+            { dimension: "efficiency", label: "成本与效率", score: 85, status: "measured", evidence: "Provider 上报缓存读取 9200 tokens。" },
+          ],
+          alerts: [{
+            id: "repeated-tool-9", severity: "warning", code: "repeated_tool",
+            title: "可能存在重复操作", detail: "grep 使用相同参数调用 3 次。",
+            evidenceEventIds: [9, 11, 13],
+          }],
+          timeline: [
+            { id: 18, createdAt: new Date(now).toISOString(), category: "model", severity: "info", title: "模型用量", detail: "输入 6200 · 输出 810 · 缓存读取 4100" },
+            { id: 17, createdAt: new Date(now - 1400).toISOString(), category: "tool", severity: "info", title: "工具完成：bash", detail: "命令退出码：0" },
+            { id: 16, createdAt: new Date(now - 4300).toISOString(), category: "tool", severity: "info", title: "开始工具：bash", detail: "命令：npm test" },
+            { id: 15, createdAt: new Date(now - 5200).toISOString(), category: "plan", severity: "info", title: "工作计划更新", detail: "3 个步骤" },
+          ],
+          limitations: ["确定性规则不能替代业务验收。"],
+        },
+      };
+    },
+    async exportMonitorReport() {
+      return { canceled: false, filePath: "D:\\Exports\\AllyCode-Diagnostic-demo.json" };
     },
     async startAgent(request) {
       const runId = crypto.randomUUID();
@@ -361,6 +625,7 @@ export function createMockDesktopApi(): AllyCodeDesktopApi {
           : [];
       const timers = sequence([
         { delay: 80, event: { runId, event: { type: "status", phase: "waiting_model", iteration: 1 } } },
+        { delay: 300, event: { runId, event: { type: "plan_update", items: [{step:"检查项目运行链路",status:"in_progress"},{step:"核验结果并汇报",status:"pending"}] } } },
         { delay: 600, event: { runId, event: { type: "status", phase: "streaming", iteration: 1 } } },
         { delay: 650, event: { runId, event: { type: "text_delta", delta: "我先读取相关代码并核对真实执行链路。" } } },
         { delay: 700, event: { runId, event: { type: "thinking_delta", delta: "正在检查相关运行链路…" } } },
@@ -370,6 +635,7 @@ export function createMockDesktopApi(): AllyCodeDesktopApi {
         { delay: 1420, event: { runId, event: { type: "tool_start", toolName: "grep", toolId: "tool-1", input: { pattern: "streamError", path: "src/providers" } } } },
         { delay: 2600, event: { runId, event: { type: "tool_result", toolId: "tool-1", toolName: "grep", content: "src/providers/openai-compatible.ts: streamError", isError: false } } },
         { delay: 2640, event: { runId, event: { type: "status", phase: "waiting_model_after_tool", iteration: 1 } } },
+        { delay: 2700, event: { runId, event: { type: "plan_update", items: [{step:"检查项目运行链路",status:"completed"},{step:"核验结果并汇报",status:"in_progress"}] } } },
         { delay: 5100, event: { runId, event: { type: "status", phase: "streaming", iteration: 2 } } },
         ...responseEvents,
         { delay: finalDelay - 20, event: { runId, event: { type: "status", phase: "completed", iteration: 2, stopReason: "end_turn" } } },
@@ -388,6 +654,12 @@ export function createMockDesktopApi(): AllyCodeDesktopApi {
       activeRuns.set(runId, { taskId, timers });
       return { runId, taskId };
     },
+    async steerAgent(runId,text) {
+      if(!activeRuns.has(runId))throw new Error("任务已结束，请重新发送。");
+      const id=crypto.randomUUID();
+      setTimeout(()=>{for(const listener of listeners)listener({runId,event:{type:"user_steering",id,text,createdAt:new Date().toISOString()}});},300);
+      return {id,status:"queued"};
+    },
     async resumeTask(taskId) {
       const task = tasks.find((item) => item.id === taskId);
       if (!task) throw new Error("Task not found");
@@ -399,6 +671,7 @@ export function createMockDesktopApi(): AllyCodeDesktopApi {
         resume: true,
       });
     },
+    async continuePhase(taskId) { return this.resumeTask(taskId); },
     async abortAgent(runId) {
       const active = activeRuns.get(runId);
       if (!active) return;

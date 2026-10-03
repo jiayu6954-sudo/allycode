@@ -20,6 +20,7 @@ import type { AIProvider } from "../providers/index.js";
 import type { SearchConfig } from "../tools/web-search.js";
 import type { ConversationMessage } from "../types/agent.js";
 import type { DevAISettings } from "../types/config.js";
+import { SettingsSchema } from "../config/schema.js";
 
 // ── Research system prompt ────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ export interface ResearchResult {
 // ── Minimal settings for research sub-loop ───────────────────────────────────
 
 function makeResearchSettings(searchConfig: SearchConfig): DevAISettings {
-  return {
+  return SettingsSchema.parse({
     provider: "anthropic",
     model: "unused",
     maxTokens: 8192,
@@ -136,7 +137,7 @@ function makeResearchSettings(searchConfig: SearchConfig): DevAISettings {
     providerBaseUrls: {},
     onboarding: { completed: true, region: "cn" },
     updates: { enabled: true, channel: "alpha", automaticDownload: false },
-  } as DevAISettings;
+  });
 }
 
 // ── Extract summary from conversation history ────────────────────────────────
@@ -208,6 +209,7 @@ export async function runResearchLoop(opts: ResearchOptions): Promise<ResearchRe
     opts.provider,
     {
       model: opts.model,
+      modelCallPurpose: "research",
       maxTokens: Math.min(opts.maxTokens, 8192),
       systemPrompt: RESEARCH_SYSTEM_PROMPT,
       conversationHistory: history,

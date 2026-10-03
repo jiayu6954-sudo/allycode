@@ -13,13 +13,12 @@ export type UserPromptFn = (
 ) => Promise<PermissionDecision>;
 
 export class PermissionManager {
-  // Cache of (toolName + JSON input hash) → "allow-session" decisions
-  private sessionAllowances = new Set<string>();
-
   constructor(
     private settings: DevAISettings,
     private promptUser: UserPromptFn,
-    private sandboxEnabled = false
+    private sandboxEnabled = false,
+    /** Shared by the desktop service across pause/resume runs of one task. */
+    private sessionAllowances = new Set<string>(),
   ) {}
 
   async request(toolName: string, input: ToolInput | Record<string, unknown>): Promise<PermissionDecision> {
@@ -27,6 +26,10 @@ export class PermissionManager {
     const description = describeAction(toolName, input);
 
     const req: PermissionRequest = { toolName, input, riskLevel, description };
+
+    // Planning updates only the agent's own visible checklist. It has no file,
+    // network or process side effect and must not ask the user to approve a plan.
+    if (["plan_update","verification_status","phase_checkpoint"].includes(toolName)) return "allow";
 
     logger.debug("permission.request", { toolName, riskLevel, description });
 
@@ -87,6 +90,7 @@ export class PermissionManager {
   }
 
   private isAutoAllowed(req: PermissionRequest): boolean {
+    if (req.toolName === "desktop_control") return false;
     // Custom rules take precedence
     for (const rule of [...this.settings.customRules].reverse()) {
       if (rule.tool === req.toolName || rule.tool === "*") {
@@ -104,6 +108,12 @@ export class PermissionManager {
       return true;
     }
 
+    // Verifying a locally served page is inspection of the agent's own output,
+    // not network egress. Making it prompt is what strands frontend tasks.
+    if (req.toolName === "browser_verify" && req.riskLevel === "safe") {
+      return true;
+    }
+
     return level === "auto" && req.riskLevel !== "dangerous";
   }
 
@@ -112,6 +122,11 @@ export class PermissionManager {
   }
 
   private cacheKey(req: PermissionRequest): string {
+    if (["sources_to_excel", "document_ocr", "vision_analyze", "document_format"].includes(req.toolName)) return `${req.toolName}:${String((req.input as Record<string,unknown>).action)}:${req.riskLevel}`;
+    if (req.toolName === "desktop_control") {
+      const input = req.input as Record<string, unknown>;
+      return `${req.toolName}:${input.action}:${input.windowHandle ?? "list"}`;
+    }
     return `${req.toolName}:${req.riskLevel}`;
   }
 
@@ -122,6 +137,8 @@ export class PermissionManager {
   }
 
   private requiresNetworkApproval(req: PermissionRequest): boolean {
+    if (["sources_to_excel", "document_format"].includes(req.toolName)) return (req.input as Record<string,unknown>).action === "setup";
+    if (req.toolName === "browser_verify") return req.riskLevel !== "safe";
     return ["web_fetch", "web_search", "spawn_research"].includes(req.toolName);
   }
 
@@ -139,6 +156,12 @@ export class PermissionManager {
         bash: "deny" as const,
         file_write: "deny" as const,
         file_edit: "deny" as const,
+        sources_to_excel: "deny" as const,
+        document_ocr: "deny" as const,
+        document_format: "deny" as const,
+        vision_analyze: "deny" as const,
+        browser_verify: "deny" as const,
+        desktop_control: "deny" as const,
         web_fetch: "ask" as const,
       },
     };

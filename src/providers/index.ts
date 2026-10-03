@@ -1,12 +1,30 @@
-﻿import type { AIProvider, ProviderName, ProviderStreamHandle, StreamParams, NormalizedDelta, NormalizedMessage } from "./interface.js";
+import { meteredProvider } from "./model-gateway.js";
+import type { AIProvider, ProviderName, ProviderStreamHandle, StreamParams, NormalizedDelta, NormalizedMessage } from "./interface.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { OpenAICompatibleProvider, PROVIDER_PRESETS } from "./openai-compatible.js";
 import { SmartLocalProvider, discoverLocalModel } from "./local.js";
+import { ResponsesProvider } from "./responses.js";
 import type { DevAISettings } from "../types/config.js";
 
 export { AnthropicProvider } from "./anthropic.js";
 export { OpenAICompatibleProvider, PROVIDER_PRESETS } from "./openai-compatible.js";
 export { SmartLocalProvider, discoverLocalModel } from "./local.js";
+export { ResponsesProvider } from "./responses.js";
+export { normalizeProviderModelId } from "./model-id.js";
+export {
+  MODEL_CAPABILITY_REGISTRY,
+  discoverModelCatalog,
+  getRegisteredModelCapabilities,
+  parseModelList,
+} from "./model-catalog.js";
+export type {
+  DiscoverModelCatalogOptions,
+  ModelCatalogEntry,
+  ModelCatalogResult,
+  ModelCatalogSource,
+  ModelListStyle,
+  ModelVerification,
+} from "./model-catalog.js";
 export type { AIProvider, NormalizedMessage, NormalizedBlock, NormalizedDelta, ProviderName } from "./interface.js";
 
 /**
@@ -17,7 +35,9 @@ export type { AIProvider, NormalizedMessage, NormalizedBlock, NormalizedDelta, P
  *   2. CLI --api-key flag (passed via envApiKey)
  *   3. Environment variables (ANTHROPIC_API_KEY, DEEPSEEK_API_KEY, etc.)
  */
-export function createProvider(
+export function createProvider(settings: DevAISettings, envApiKey?: string): AIProvider { return meteredProvider(createRawProvider(settings, envApiKey)); }
+
+function createRawProvider(
   settings: DevAISettings,
   envApiKey?: string
 ): AIProvider {
@@ -25,6 +45,9 @@ export function createProvider(
 
   // ── Anthropic ──────────────────────────────────────────────────────────────
   if (providerName === "anthropic") {
+    if (settings.providerProtocol !== "auto" && settings.providerProtocol !== "anthropic") {
+      throw new Error(`Provider "anthropic" only supports the Anthropic protocol.`);
+    }
     const key =
       settings.apiKey ??
       envApiKey ??
@@ -39,11 +62,22 @@ export function createProvider(
     const url = settings.customProviderUrl;
     if (!url) throw new Error("provider=custom requires customProviderUrl in settings.");
     const key = settings.customProviderKey ?? envApiKey ?? "";
+    if (settings.providerProtocol === "responses") {
+      return new ResponsesProvider(url, key, "custom", {
+        reasoningEffort: responsesEffort(settings.reasoning?.effort),
+      });
+    }
+    if (settings.providerProtocol === "anthropic") {
+      throw new Error("provider=custom does not have an Anthropic-protocol adapter.");
+    }
     return new OpenAICompatibleProvider(url, key, "custom");
   }
 
   // ── Ollama / local — smart provider with auto-discovery + XML fallback ────
   if (providerName === "ollama") {
+    if (settings.providerProtocol !== "auto" && settings.providerProtocol !== "chat_completions") {
+      throw new Error(`Provider "ollama" only supports Chat Completions in AllyCode.`);
+    }
     // SmartLocalProvider is async (needs probe), so we return a lazy wrapper
     // that discovers and delegates on first stream() call.
     return new LazyLocalProvider(
@@ -61,12 +95,39 @@ export function createProvider(
   const key = resolveKey(settings, providerName, envApiKey, preset.envKey);
   if (!key) throw new MissingKeyError(providerName, preset.envKey);
 
+  const protocol = settings.providerProtocol === "auto"
+    ? (providerName === "openai" ? "responses" : "chat_completions")
+    : settings.providerProtocol;
+  if (protocol === "responses") {
+    if (providerName !== "openai" && providerName !== "deepseek") {
+      throw new Error(
+        `Provider "${providerName}" has no verified Responses API adapter. ` +
+        `Use Chat Completions or a custom Responses endpoint.`,
+      );
+    }
+    return new ResponsesProvider(
+      settings.providerBaseUrls?.[providerName] ?? preset.baseUrl,
+      key,
+      providerName,
+      { reasoningEffort: providerName === "deepseek" ? (settings.reasoning?.mode === "disabled" ? "none" : deepSeekEffort(settings.reasoning?.effort)) : responsesEffort(settings.reasoning?.effort) },
+    );
+  }
+  if (protocol === "anthropic") {
+    throw new Error(`Provider "${providerName}" is not configured with an Anthropic-protocol adapter.`);
+  }
+
   return new OpenAICompatibleProvider(
     settings.providerBaseUrls?.[providerName] ?? preset.baseUrl,
     key,
     providerName,
     preset.maxTokensLimit,
     preset.maxTokensParameter,
+    {
+      reasoningMode: settings.reasoning?.mode,
+      reasoningEffort: providerName === "moonshot"
+        ? kimiEffort(settings.reasoning?.effort)
+        : deepSeekEffort(settings.reasoning?.effort),
+    },
   );
 }
 
@@ -94,6 +155,30 @@ function resolveKey(
 
   // Environment variable
   return process.env[envVarName] ?? "";
+}
+
+function deepSeekEffort(
+  effort: DevAISettings["reasoning"]["effort"] | undefined,
+): "low" | "high" | "max" | undefined {
+  if (!effort || effort === "auto") return undefined;
+  return effort === "max" ? "max" : effort === "low" ? "low" : "high";
+}
+
+function kimiEffort(
+  effort: DevAISettings["reasoning"]["effort"] | undefined,
+): "low" | "high" | "max" | undefined {
+  if (!effort || effort === "auto") return undefined;
+  if (effort === "low") return "low";
+  if (effort === "max" || effort === "xhigh") return "max";
+  return "high";
+}
+
+function responsesEffort(
+  effort: DevAISettings["reasoning"]["effort"] | undefined,
+): "low" | "medium" | "high" | "xhigh" | undefined {
+  if (!effort || effort === "auto") return undefined;
+  if (effort === "max") return "xhigh";
+  return effort;
 }
 
 /**

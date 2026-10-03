@@ -1,0 +1,34 @@
+services:
+  accounts:
+    build:
+      context: ../..
+      dockerfile: deploy/accounts/Dockerfile
+    environment:
+      ALLYCODE_TRUST_PROXY: "1"
+      ALLYCODE_AUTH_SECRET: ${ALLYCODE_AUTH_SECRET:?Set a random secret of at least 32 characters}
+      RESEND_API_KEY: ${RESEND_API_KEY:?Set a mail service key}
+      ALLYCODE_MAIL_FROM: ${ALLYCODE_MAIL_FROM:?Set your verified sender}
+    volumes:
+      - accounts:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    read_only: true
+    mem_limit: 256m
+    pids_limit: 64
+  https:
+    image: caddy:2-alpine
+    environment:
+      ACCOUNT_DOMAIN: ${ACCOUNT_DOMAIN:?Set your account service domain}
+    ports: ["443:443", "80:80"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [accounts]
+    restart: unless-stopped
+volumes:
+  accounts:
+  caddy_data:
+  caddy_config:

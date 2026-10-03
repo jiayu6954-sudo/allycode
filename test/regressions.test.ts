@@ -6,6 +6,7 @@ import { parseValue, setNestedValue } from "../src/cli/commands/config.js";
 import { runResearchLoop } from "../src/agent/research-loop.js";
 import { createSession, loadSession, saveSession } from "../src/memory/session.js";
 import { OpenAICompatibleProvider } from "../src/providers/openai-compatible.js";
+import { providerHttpErrorHint } from "../src/providers/http-error.js";
 import type {
   AIProvider,
   NormalizedDelta,
@@ -99,6 +100,11 @@ describe("OpenAI-compatible streaming errors", () => {
       tools: [],
     });
     await expect(handle.finalMessage()).rejects.toThrow(/401/);
+  });
+
+  it("explains billing failures in Chinese", () => {
+    expect(providerHttpErrorHint(402)).toContain("余额不足");
+    expect(providerHttpErrorHint(402)).toContain("密钥已经连接");
   });
 });
 

@@ -30,12 +30,23 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { logger } from "../utils/logger.js";
+import { sourcesExcelDirectory } from "./bundled.js";
 
 export interface Skill {
+  id: string;
   name: string;
   triggers: string[];
   body: string;
   filePath: string;
+  enabled: boolean;
+}
+
+export interface SkillDocument {
+  id: string;
+  name: string;
+  triggers: string[];
+  body: string;
+  enabled: boolean;
 }
 
 const SKILLS_DIR = path.join(
@@ -75,15 +86,21 @@ function parseFrontmatter(content: string): { meta: Record<string, unknown>; bod
 
 /** Load all skill files from ~/.allycode/skills/ */
 export function loadSkills(): Skill[] {
-  if (!fs.existsSync(SKILLS_DIR)) return [];
-
   const skills: Skill[] = [];
+  try {
+    const directory = sourcesExcelDirectory();
+    const { body } = parseFrontmatter(fs.readFileSync(path.join(directory, "SKILL.md"), "utf8"));
+    const integration = fs.readFileSync(path.join(directory, "references", "allycode.md"), "utf8") + "\n\n" + fs.readFileSync(path.join(directory, "references", "interface.md"), "utf8");
+    skills.push({ id: "builtin-sources-to-excel", name: "资料整理成 Excel（内置）", triggers: ["excel", "excl", "xlsx", "表格", "发票", "扫描件", "ocr", "公式", "sumif", "vlookup", "xlookup"], body: `${body}\n\n${integration}`, filePath: path.join(directory, "SKILL.md"), enabled: true });
+    skills.push({id:"builtin-excel-formulas",name:"行业数据与 Excel 公式（内置）",triggers:["excel","excl","xlsx","表格","公式","sumif","vlookup","xlookup","毛利","利润率"],body:fs.readFileSync(path.join(directory,"references/formulas.md"),"utf8"),filePath:path.join(directory,"references/formulas.md"),enabled:true});
+  } catch (error) { logger.warn("skills.builtin_unavailable", { error: String(error) }); }
+  if (!fs.existsSync(SKILLS_DIR)) return skills;
   let files: string[];
   try {
     files = fs.readdirSync(SKILLS_DIR).filter((f) => f.endsWith(".md"));
   } catch (err) {
     logger.warn("skills.read_dir_failed", { error: String(err) });
-    return [];
+    return skills;
   }
 
   for (const file of files) {
@@ -106,7 +123,10 @@ export function loadSkills(): Skill[] {
           ? meta["name"]
           : path.basename(file, ".md");
 
-      skills.push({ name, triggers, body, filePath });
+      const enabled = meta["enabled"] !== "false";
+      if (!enabled) continue;
+
+      skills.push({ id: path.basename(file, ".md"), name, triggers, body, filePath, enabled });
       logger.debug("skills.loaded", { name, triggers: triggers.length, file });
     } catch (err) {
       logger.warn("skills.load_failed", { file, error: String(err) });
@@ -115,6 +135,80 @@ export function loadSkills(): Skill[] {
 
   logger.info("skills.ready", { count: skills.length, dir: SKILLS_DIR });
   return skills;
+}
+
+/** List every skill document, including disabled entries, for desktop management. */
+export function listSkillDocuments(): SkillDocument[] {
+  if (!fs.existsSync(SKILLS_DIR)) return [];
+  return fs.readdirSync(SKILLS_DIR)
+    .filter((file) => file.endsWith(".md"))
+    .sort((a, b) => a.localeCompare(b, "zh-CN"))
+    .flatMap((file) => {
+      try {
+        const content = fs.readFileSync(path.join(SKILLS_DIR, file), "utf-8");
+        const { meta, body } = parseFrontmatter(content);
+        const rawTriggers = meta["triggers"];
+        const triggers = Array.isArray(rawTriggers)
+          ? rawTriggers as string[]
+          : typeof rawTriggers === "string" ? [rawTriggers] : [];
+        return [{
+          id: path.basename(file, ".md"),
+          name: typeof meta["name"] === "string" ? meta["name"] : path.basename(file, ".md"),
+          triggers,
+          body,
+          enabled: meta["enabled"] !== "false",
+        }];
+      } catch (err) {
+        logger.warn("skills.list_failed", { file, error: String(err) });
+        return [];
+      }
+    });
+}
+
+/** Persist a user-authored workflow with a traversal-safe stable identifier. */
+export function saveSkillDocument(document: SkillDocument): SkillDocument {
+  const id = validateSkillId(document.id);
+  const name = document.name.trim();
+  const body = document.body.trim();
+  if (!name || name.length > 100) throw new Error("Skill 名称长度必须为 1–100 个字符");
+  if (!body || body.length > 100_000) throw new Error("Skill 内容长度必须为 1–100000 个字符");
+  const triggers = document.triggers
+    .map((trigger) => trigger.trim())
+    .filter(Boolean)
+    .slice(0, 30);
+  if (triggers.some((trigger) => trigger.length > 80 || /[\r\n,\]]/.test(trigger))) {
+    throw new Error("触发词不能包含换行、英文逗号或右方括号，且最长 80 个字符");
+  }
+  fs.mkdirSync(SKILLS_DIR, { recursive: true });
+  const content = [
+    "---",
+    `name: ${name.replace(/[\r\n]/g, " ")}`,
+    `enabled: ${document.enabled ? "true" : "false"}`,
+    `triggers: [${triggers.join(", ")}]`,
+    "---",
+    body,
+    "",
+  ].join("\n");
+  fs.writeFileSync(path.join(SKILLS_DIR, `${id}.md`), content, "utf-8");
+  return { id, name, triggers, body, enabled: document.enabled };
+}
+
+export function deleteSkillDocument(id: string): void {
+  const safeId = validateSkillId(id);
+  const target = path.join(SKILLS_DIR, `${safeId}.md`);
+  if (fs.existsSync(target)) fs.unlinkSync(target);
+}
+
+export function getSkillsDirectory(): string {
+  return SKILLS_DIR;
+}
+
+function validateSkillId(id: string): string {
+  const normalized = id.trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(normalized)) {
+    throw new Error("Skill 标识只能包含小写字母、数字、短横线或下划线");
+  }
+  return normalized;
 }
 
 /**
@@ -139,7 +233,7 @@ export function formatSkillsForPrompt(skills: Skill[]): string {
 
   const sections = skills.map((s) => {
     const header = `### Skill: ${s.name}`;
-    return `${header}\n${s.body}`;
+    return `${header}\n技能目录：${path.dirname(s.filePath)}（相对引用以此为基准）\n${s.body}`;
   });
 
   return `# Active Skills (user-defined workflow protocols)

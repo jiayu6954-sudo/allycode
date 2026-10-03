@@ -1,0 +1,5 @@
+{$ACCOUNT_DOMAIN} {
+  reverse_proxy accounts:8787 {
+    header_up X-AllyCode-Client-IP {remote_host}
+  }
+}

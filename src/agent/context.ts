@@ -26,11 +26,7 @@ export class ContextManager {
 
   append(message: ConversationMessage): void {
     this.messages.push(message);
-    if (this.messages.length > this.settings.context.maxHistoryMessages) {
-      this.messages = this.messages.slice(
-        this.messages.length - this.settings.context.maxHistoryMessages
-      );
-    }
+
   }
 
   getHistory(): ConversationMessage[] {

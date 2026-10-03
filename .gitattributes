@@ -1,0 +1,4 @@
+# Preserve source bytes so manifest hashes also match Git checkouts.
+* -text
+# Linux entry scripts must remain directly executable with LF endings.
+*.sh text eol=lf

@@ -3,6 +3,22 @@ import path from "node:path";
 
 const INVISIBLE_PATH_CHARS = /[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]/g;
 
+/** Drive, filesystem, and bare UNC roots are too broad for an autonomous task. */
+export function isUnsafeWorkspaceRoot(workspacePath: string): boolean {
+  const resolved = path.resolve(workspacePath);
+  const parsed = path.parse(resolved);
+  return normalizeForComparison(resolved) === normalizeForComparison(parsed.root);
+}
+
+export function assertSafeWorkspaceRoot(workspacePath: string): void {
+  if (isUnsafeWorkspaceRoot(workspacePath)) {
+    throw new Error(
+      `为保护本机文件，不能把磁盘或文件系统根目录设为项目：${path.resolve(workspacePath)}。` +
+      "请选择或新建一个具体的项目文件夹。",
+    );
+  }
+}
+
 /**
  * Resolve a host file-tool path and keep both its lexical and real path inside
  * the active workspace. Checking the nearest existing ancestor also blocks a
@@ -47,4 +63,9 @@ function nearestExistingAncestor(candidate: string): string {
     current = parent;
   }
   return current;
+}
+
+function normalizeForComparison(value: string): string {
+  const normalized = path.normalize(value).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }

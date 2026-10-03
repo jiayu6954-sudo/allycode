@@ -2,15 +2,27 @@ appId: com.allycode.desktop
 productName: AllyCode
 forceCodeSigning: true
 directories:
-  output: release/alpha.8
+  output: release/alpha.11
 files:
   - dist-desktop/**/*
   - dist/**/*
   - package.json
   - node_modules/**/*
 extraResources:
+  - from: skill/sources-to-excel-complete/sources-to-excel
+    to: skills/sources-to-excel
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/.venv/**"
   - from: .release/update-sources.json
     to: update-sources.json
+  - from: benchmarks/projects/binary-market-protocol-challenge
+    to: benchmarks/projects/binary-market-protocol-challenge
+    filter:
+      - "**/*"
+      - "!.challenge-results/**/*"
+      - "!.allycode-eval/**/*"
 win:
   icon: desktop/assets/icon.png
   forceCodeSigning: true

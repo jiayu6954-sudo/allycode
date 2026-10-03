@@ -125,7 +125,7 @@ export class DesktopUpdateService {
         status: "downloaded",
         availableVersion: info.version,
         progress: 100,
-        message: "更新已下载并通过签名校验，可以重启安装。",
+        message: "更新已下载并通过更新器完整性检查，可以重启安装。",
       });
     });
     autoUpdater.on("error", (error) => {

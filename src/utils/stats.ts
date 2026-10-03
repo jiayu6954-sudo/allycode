@@ -32,6 +32,9 @@ interface ToolStat {
 }
 
 export class SessionStats {
+  /** Prices are per-model; hardcoding one made every other provider wrong. */
+  constructor(private model = "", private provider?: string) {}
+
   private toolStats = new Map<ToolName, ToolStat>();
   private startTime = Date.now();
   private usage: TokenUsage = {
@@ -39,7 +42,8 @@ export class SessionStats {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
-    estimatedCostUsd: 0,
+    estimatedCost: null,
+    costCurrency: null,
   };
   private savedByCache = 0; // 因缓存命中节省的估算成本（USD）
 
@@ -63,7 +67,9 @@ export class SessionStats {
     if (partial.outputTokens) this.usage.outputTokens += partial.outputTokens;
     if (partial.cacheReadTokens) this.usage.cacheReadTokens += partial.cacheReadTokens;
     if (partial.cacheWriteTokens) this.usage.cacheWriteTokens += partial.cacheWriteTokens;
-    this.usage.estimatedCostUsd = calculateCost("claude-sonnet-4-6", this.usage);
+    const priced = calculateCost(this.model, this.usage, this.provider);
+    this.usage.estimatedCost = priced.amount;
+    this.usage.costCurrency = priced.currency;
   }
 
   setFinalUsage(usage: TokenUsage): void {
@@ -112,9 +118,9 @@ export class SessionStats {
 
     // 成本
     lines.push(` 模型:   ${model}`);
-    lines.push(` 总成本: ${formatCost(this.usage.estimatedCostUsd)}`);
+    lines.push(` 总成本: ${formatCost(this.usage.estimatedCost, this.usage.costCurrency)}`);
     if (this.savedByCache > 0) {
-      lines.push(` 缓存省: ~${formatCost(this.savedByCache)}`);
+      lines.push(` 缓存省: ~${formatCost(this.savedByCache, this.usage.costCurrency)}`);
     }
 
     lines.push(sep);

@@ -5,6 +5,7 @@ import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { DATA_DIR } from "../config/settings.js";
 import type { ConversationMessage, TokenUsage } from "../types/agent.js";
+import { externalizeContinuation } from "./continuation-state.js";
 
 // Keep the protocol out of the static bundle graph. Some Electron bundlers
 // rewrite `node:sqlite` to the non-existent npm package `sqlite`.
@@ -37,6 +38,8 @@ export interface TaskCheckpoint {
   reason: "initial" | "iteration" | "permission" | "paused" | "completed" | "failed";
   usage?: TokenUsage;
   note?: string;
+  plan?: import("../types/tools.js").PlanUpdateInput["items"];
+  compactionState?: import("../agent/context-compaction.js").CompactionState;
 }
 
 export interface TaskRecord {
@@ -381,7 +384,7 @@ export class AgentDatabase {
       UPDATE tasks
       SET checkpoint_json = ?, updated_at = ?, revision = revision + 1
       WHERE id = ?
-    `).run(JSON.stringify(checkpoint), now, taskId);
+    `).run(JSON.stringify({ ...checkpoint, conversationHistory: externalizeContinuation(checkpoint.conversationHistory) }), now, taskId);
     this.appendEvent(taskId, "checkpoint_saved", {
       reason: checkpoint.reason,
       messageCount: checkpoint.conversationHistory.length,
@@ -402,10 +405,12 @@ export class AgentDatabase {
       VALUES (?, ?, ?, ?, ?)
     `).run(taskId, runId ?? null, eventType, payloadJson, now);
     const eventId = Number(result.lastInsertRowid);
-    this.db.prepare(`
-      INSERT INTO task_event_search (event_id, task_id, event_type, content)
-      VALUES (?, ?, ?, ?)
-    `).run(eventId, taskId, eventType, searchableText(payload));
+    if (isSearchableEventType(eventType)) {
+      this.db.prepare(`
+        INSERT INTO task_event_search (event_id, task_id, event_type, content)
+        VALUES (?, ?, ?, ?)
+      `).run(eventId, taskId, eventType, searchableText(payload));
+    }
     return eventId;
   }
 
@@ -423,6 +428,26 @@ export class AgentDatabase {
       payload: safeJsonParse(row.payload_json),
       createdAt: row.created_at,
     }));
+  }
+
+  /** Complete, compact event stream used by the deterministic monitor. */
+  listMonitorEvents(taskId: string): TaskEventRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM task_events
+      WHERE task_id = ?
+        AND event_type NOT IN (
+          'agent_text_delta', 'agent_thinking_delta', 'agent_tool_progress'
+        )
+      ORDER BY id ASC
+    `).all(taskId) as unknown as TaskEventRow[];
+    return rows.map(mapTaskEvent);
+  }
+
+  countEvents(taskId: string): number {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS count FROM task_events WHERE task_id = ?",
+    ).get(taskId) as { count: number };
+    return row.count;
   }
 
   searchEvents(query: string, limit = 20, projectId?: string): TaskEventRecord[] {
@@ -635,6 +660,28 @@ function mapTask(row: TaskRow): TaskRecord {
     completedAt: row.completed_at ?? undefined,
     revision: row.revision,
   };
+}
+
+function mapTaskEvent(row: TaskEventRow): TaskEventRecord {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    runId: row.run_id ?? undefined,
+    eventType: row.event_type,
+    payload: safeJsonParse(row.payload_json),
+    createdAt: row.created_at,
+  };
+}
+
+function isSearchableEventType(eventType: string): boolean {
+  return ![
+    "agent_text_delta",
+    "agent_thinking_delta",
+    "agent_tool_progress",
+    "agent_stream_signal",
+    "agent_status",
+    "agent_usage",
+  ].includes(eventType);
 }
 
 function uniqueNonEmpty(values: string[]): string[] {

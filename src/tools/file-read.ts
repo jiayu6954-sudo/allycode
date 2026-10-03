@@ -11,6 +11,9 @@ export async function executeFileRead(
   ctx: ToolExecutionContext
 ): Promise<ToolResult> {
   const filePath = resolveWorkspacePath(ctx.cwd, input.path);
+  if (/\.(pdf|xlsx?|docx?|png|jpe?g|tiff?|bmp|webp|heic)$/i.test(filePath)) {
+    return { content: "此格式不是纯文本，file_read 不会将二进制内容当作文字读取。资料/表格请用 sources_to_excel scan，再用 inspect 分页查看；图片/扫描 PDF 请用 document_ocr。", isError: true };
+  }
   logger.debug("file_read.execute", { path: filePath, startLine: input.startLine, endLine: input.endLine });
 
   try {

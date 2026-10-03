@@ -11,6 +11,7 @@ import { logger } from "../utils/logger.js";
 
 export class AnthropicProvider implements AIProvider {
   readonly providerName = "anthropic" as const;
+  readonly protocol = "anthropic" as const;
   private client: Anthropic;
 
   constructor(apiKey: string, baseURL?: string) {
@@ -34,7 +35,7 @@ export class AnthropicProvider implements AIProvider {
           description: t.description,
           input_schema: t.input_schema,
         })),
-        messages: params.messages,
+        messages: params.messages.map(({ providerState: _providerState, ...message }) => message),
       },
       { signal: params.signal }
     );

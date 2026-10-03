@@ -19,7 +19,7 @@ Requirements:
 - Node.js 22.13 or newer;
 - npm 10 or newer;
 - Windows, macOS, or Linux for CLI development;
-- Windows for producing the currently supported desktop installer;
+- Windows for Windows installers; Ubuntu 24.04 x64 for the tested Linux desktop baseline;
 - Docker only for optional sandbox testing.
 
 ```bash
@@ -44,6 +44,16 @@ Run the desktop application:
 ```bash
 npm run desktop
 ```
+
+## Office regression prerequisites
+
+The full suite includes real document and formula checks. Install Python 3.10+ and the dependencies in `skill/sources-to-excel-complete/sources-to-excel/linux-requirements.txt` (use a virtual environment on Linux). Linux also requires the system packages installed by `scripts/linux-components.sh` inside that skill directory; review the fixed package list before running it with sudo. Then run:
+
+```sh
+npx tsx scripts/setup-formula-tests.ts
+```
+
+This installs optional document components and may download a large LibreOffice runtime. `ALLYCODE_DOCUMENT_HOME` can point to an existing prepared component directory. It does not call a paid model. Test fixtures contain synthetic or character-class-redacted data.
 
 ## Pull request expectations
 

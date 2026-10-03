@@ -88,6 +88,10 @@ export interface LocalCapabilities {
   endpoint: LocalEndpoint;
   availableModels: string[];
   supportsToolCalls: boolean;
+  /** A model name is only a hint; native support is certified by two real turns. */
+  toolSupport: "native_verified" | "prompt_fallback";
+  agentTier: "L1_prompt_fallback" | "L2_native_limited" | "L3_agent_ready";
+  toolSupportHint: boolean;
   contextLength: number;
 }
 
@@ -141,19 +145,37 @@ export async function probeEndpoint(
       }
     }
 
-    // 3. Determine tool support: pattern match first, then probe
-    const supportsToolCalls = modelSupportsTools(model)
-      || await probeToolSupport(endpoint.baseUrl, model);
+    // 3. Names are never treated as proof. A native badge requires a full
+    // tool-call -> tool-result -> acknowledgement round trip.
+    const toolSupportHint = modelSupportsTools(model);
+    const supportsToolCalls = await probeToolSupport(endpoint.baseUrl, model);
+    const toolSupport = supportsToolCalls ? "native_verified" : "prompt_fallback";
+    const agentTier = !supportsToolCalls
+      ? "L1_prompt_fallback"
+      : contextLength < 32_768
+        ? "L2_native_limited"
+        : "L3_agent_ready";
 
     logger.debug("local.probe", {
       name: endpoint.name,
       model,
       contextLength,
       supportsToolCalls,
+      toolSupport,
+      agentTier,
+      toolSupportHint,
       modelCount: availableModels.length,
     });
 
-    return { endpoint, availableModels, supportsToolCalls, contextLength };
+    return {
+      endpoint,
+      availableModels,
+      supportsToolCalls,
+      toolSupport,
+      agentTier,
+      toolSupportHint,
+      contextLength,
+    };
   } catch {
     return null;
   }
@@ -183,31 +205,77 @@ function modelSupportsTools(model: string): boolean {
 
 async function probeToolSupport(baseUrl: string, model: string): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    const endpoint = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+    const tool = {
+      type: "function",
+      function: {
+        name: "allycode_capability_probe",
+        description: "Return one supplied probe value.",
+        parameters: {
+          type: "object",
+          properties: { value: { type: "string" } },
+          required: ["value"],
+        },
+      },
+    };
+    const firstMessages = [
+      {
+        role: "system",
+        content: "You are a capability probe. Call the supplied tool exactly once and do not answer in text.",
+      },
+      { role: "user", content: "Call allycode_capability_probe with value ALPHA9." },
+    ];
+    const res = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
-        max_tokens: 1,
-        messages: [{ role: "user", content: "hi" }],
-        tools: [{
-          type: "function",
-          function: { name: "test", description: "test", parameters: { type: "object", properties: {}, required: [] } },
-        }],
-        tool_choice: "none",
+        max_tokens: 128,
+        temperature: 0,
+        messages: firstMessages,
+        tools: [tool],
+        tool_choice: "auto",
         stream: false,
       }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(20_000),
     });
-    if (res.ok) return true;
-    if (res.status === 400) {
-      // Distinguish "model doesn't support tools" (false) from other 400s
-      const body = await res.text().catch(() => "");
-      if (/does not support tools|tool.*not supported|not.*support.*tool/i.test(body)) return false;
-      // Other 400 = request was parsed, tools field accepted
-      return true;
-    }
-    return false;
+    if (!res.ok) return false;
+    const first = await res.json() as {
+      choices?: Array<{ message?: { content?: string | null; tool_calls?: Array<{
+        id?: string;
+        type?: string;
+        function?: { name?: string; arguments?: string };
+      }> } }>;
+    };
+    const assistant = first.choices?.[0]?.message;
+    const call = assistant?.tool_calls?.find((candidate) =>
+      candidate.function?.name === "allycode_capability_probe" && Boolean(candidate.id)
+    );
+    if (!assistant || !call?.id) return false;
+    let args: Record<string, unknown> = {};
+    try { args = JSON.parse(call.function?.arguments ?? "{}") as Record<string, unknown>; } catch { return false; }
+    if (args["value"] !== "ALPHA9") return false;
+
+    const second = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        max_tokens: 64,
+        temperature: 0,
+        messages: [
+          ...firstMessages,
+          { role: "assistant", content: assistant.content ?? null, tool_calls: assistant.tool_calls },
+          { role: "tool", tool_call_id: call.id, content: "ALLYCODE_TOOL_RESULT" },
+          { role: "user", content: "Reply with exactly ALLYCODE_TOOL_OK." },
+        ],
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!second.ok) return false;
+    const final = await second.json() as { choices?: Array<{ message?: { content?: string | null } }> };
+    return final.choices?.[0]?.message?.content === "ALLYCODE_TOOL_OK";
   } catch {
     return false;
   }
@@ -354,7 +422,7 @@ export class SmartLocalProvider implements AIProvider {
       caps.endpoint.baseUrl,
       "",
       "ollama",
-      caps.contextLength,
+      undefined,
     );
     this._model = model;
   }

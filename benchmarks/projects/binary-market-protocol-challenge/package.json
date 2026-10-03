@@ -1,0 +1,12 @@
+{
+  "name": "binary-market-protocol-agent-challenge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start:test": "node -e \"console.error('尚未实现 start:test，请由 Agent 从零交付系统');process.exit(2)\""
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

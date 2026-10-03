@@ -1,98 +1,45 @@
-# AllyCode architecture
+# AllyCode alpha.22 架构与代码入口
 
-## System overview
-
-AllyCode is one agent runtime exposed through three delivery surfaces:
-
-1. Electron desktop application.
-2. Ink terminal application.
-3. Headless CLI for pipes and automation.
-
-All surfaces share the same source modules under `src/`; the desktop orchestration layer under `desktop/` adapts them to secure Electron IPC.
-
-## Layers
-
-### Entry and presentation
-
-- `src/index.ts`: Commander entry point, runtime initialization, CLI mode selection.
-- `src/ui/`: Ink terminal renderer and agent-loop hook.
-- `desktop/main.ts`: Electron lifecycle and IPC handlers.
-- `desktop/preload.ts`: context-isolated renderer bridge.
-- `desktop/renderer/`: React workspace, sessions, chat, activity, permissions, and settings.
-
-### Agent runtime
-
-- `src/agent/loop.ts`: iterative model/tool loop, parallel tool execution, usage accounting, checkpoints, error limits, and token budgets.
-- `src/agent/stream.ts`: provider-neutral delta processing.
-- `src/agent/context.ts`: history and compaction support.
-- `src/agent/research-loop.ts`: isolated web research loop with restricted tools.
-- `src/agent/system-prompt.ts`: identity, safety, environment, memory, project context, skills, and command hints.
-
-### Provider abstraction
-
-`src/providers/interface.ts` defines provider-neutral stream and final-message shapes.
-
-- `anthropic.ts`: Anthropic Messages API.
-- `openai-compatible.ts`: OpenAI, DeepSeek, Groq, Gemini, OpenRouter, Moonshot, and custom endpoints.
-- `local.ts`: local endpoint discovery, capability probing, native tools, and XML fallback.
-- `index.ts`: provider selection and credential resolution.
-
-Provider streams must propagate network/parser errors to both delta consumers and `finalMessage()`. A successful empty response is treated as an error.
-
-### Tools and permissions
-
-`ToolRegistry` combines native tools and MCP tools, validates inputs with Zod, runs hooks, caps output, and manages the per-session cache.
-
-Dedicated host file tools call `resolveWorkspacePath`, which enforces lexical and real-path containment. `PermissionManager` applies static denies, session allowances, automatic policy, and dangerous-action prompts.
-
-The shell can optionally use `SandboxManager`. Strict mode always disables container networking.
-
-### MCP
-
-`MCPRegistry` connects all configured servers and namespaces tools as `server__tool`.
-
-- `StdioMCPClient`: newline-framed JSON-RPC over a managed process.
-- `HttpMCPClient`: Streamable HTTP with JSON or single-event SSE responses.
-
-Both transports send `notifications/initialized`; requests time out after 30 seconds.
-
-### Persistence
-
-Runtime data lives under `ALLYCODE_DATA_DIR` or `~/.allycode/`.
-
-- `settings.json`: validated Zod settings.
-- `sessions/*.json`: complete conversation history and usage.
-- `memory/`: user and project Markdown memory.
-- `memory/vectors.json`: versioned vector chunks with content hashes.
-- `skills/*.md`: user workflow skills.
-- `debug.log`: structured diagnostic lines.
-
-Session IDs support unique prefixes. Storage guard quotas are enforced at startup.
-
-### Semantic memory
-
-Ollama embeddings are persisted and re-indexed only when content hashes change. TF-IDF vocabulary is process-local, so persisted TF-IDF vectors are discarded at initialization and rebuilt in one vocabulary space. User memory is stored under a global project ID; project context, decisions, and learnings remain project-scoped.
-
-## Desktop event flow
+本文描述当前代码入口。平台愿景、未接通模块与未验收能力不视为已落地功能。
 
 ```text
-Renderer submit
-  -> IPC agent:start
-  -> DesktopAgentService
-  -> load settings/session/context
-  -> connect MCP and build tools
-  -> runAgentLoop
-  -> agent:event deltas/tool activity/permission
-  -> renderer updates active assistant by stable message ID
-  -> save complete updatedHistory
+Electron 桌面 / Ink 终端 / CLI
+        ↓
+Agent loop → 模型适配与协议续接
+        ↓
+权限与工具注册 → 文件 / Shell / Git / 联网 / 浏览器 / 桌面 / 办公 / 视觉
+        ↓
+计划、检查点、任务事件、产物验证、系统回执
 ```
 
-Permission requests are promises owned by the main process. Aborting a run denies any pending request before aborting the model/tool loop.
+## 主要目录
 
-## Build outputs
+| 目录 | 职责 |
+|---|---|
+| `src/agent` | 模型与工具循环、历史预算与压缩、计划、完成门禁、系统提示 |
+| `src/providers` | 流式协议、模型目录、实时兼容性探测与用量 |
+| `src/tools` | 原生工具、路径边界、Word/Excel/OCR/浏览器/桌面实现 |
+| `src/storage` | SQLite 任务、事件、检查点和工作区快照 |
+| `src/memory` | 任务记忆、会话、嵌入及语义检索模块（后两者不代表已接入主循环） |
+| `src/permissions`、`src/sandbox` | 工具授权与可选 Docker 执行 |
+| `src/mcp`、`src/skills`、`src/plugins`、`src/engines` | 协议连接、工作流和执行扩展 |
+| `src/observability`、`src/evals` | 本地检测、回放与评测工具 |
+| `src/accounts` | 独立部署的邮箱验证码账号服务 |
+| `desktop` | Electron 主进程、凭据保护、IPC、任务编排及 React UI |
+| `skill/sources-to-excel-complete/sources-to-excel` | 办公/数据处理 Python 脚本、接口与工作流 |
+| `deploy/accounts` | Docker、Compose、HTTPS 反向代理部署样例 |
+| `test` | 自动化测试与脱敏/合成夹具 |
 
-- `dist/index.js`: CLI bundle.
-- `dist-desktop/main.js`: Electron main process bundle.
-- `dist-desktop/preload.cjs`: sandbox-compatible preload.
-- `dist-desktop/renderer/`: Vite production renderer.
-- `release/`: electron-builder Windows installers.
+## 协议与恢复
+
+模型返回的工具调用及对应工具结果需组成完整事务才能成为恢复依据。私有 provider continuation 用于协议续接，不作为可见思考文本，也不能跨供应商直接转发。上下文压缩保留摘要和必要执行状态；完整事件与任务检查点用于追溯，不意味着任意长任务永不遗忘或失败。
+
+## 办公执行链
+
+资料扫描和确定性读取 → 模型理解并设计字段/报告 → 必要时 OCR/视觉 → 生成文件 → 公式重算/结构与来源校验 → 验收回执。对识别、业务语义、排版及工程执行分别说明证据，避免用一次测试退出码证明所有内容正确。
+
+## 权限与隔离
+
+专用文件工具做工作区路径与符号链接边界检查。用户批准的宿主 Shell、插件、MCP 或钩子仍受操作系统账号权限约束。Docker 默认不回退宿主；严格模式禁止联网。桌面 renderer 使用隔离 IPC，凭据不直接发给页面。
+
+账号服务是可选独立服务，不承载本地模型推理、项目文件同步或企业 RBAC。部署方法见 [账号服务](ACCOUNT_SERVICE.md)。

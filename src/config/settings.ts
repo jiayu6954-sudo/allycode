@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { SettingsSchema, type AllyCodeSettings } from "./schema.js";
+import { normalizeProviderModelId } from "../providers/model-id.js";
 
 /**
  * Runtime data location:
@@ -24,7 +25,7 @@ const LEGACY_DATA_DIR = path.join(os.homedir(), ".seed");
 export async function loadSettings(): Promise<AllyCodeSettings> {
   try {
     const raw = await fs.readFile(SETTINGS_FILE, "utf-8");
-    return SettingsSchema.parse(JSON.parse(raw) as unknown);
+    return normalizeSettings(SettingsSchema.parse(JSON.parse(raw) as unknown));
   } catch {
     return SettingsSchema.parse({});
   }
@@ -35,14 +36,14 @@ export async function saveSettings(
 ): Promise<void> {
   await fs.mkdir(CONFIG_DIR, { recursive: true });
   const current = await loadSettings();
-  const validated = SettingsSchema.parse(deepMerge(current, partial));
+  const validated = normalizeSettings(SettingsSchema.parse(deepMerge(current, partial)));
   await writePrivateSettings(validated);
 }
 
 /** Replace the complete settings document after validating it. */
 export async function replaceSettings(settings: AllyCodeSettings): Promise<void> {
   await fs.mkdir(CONFIG_DIR, { recursive: true });
-  await writePrivateSettings(SettingsSchema.parse(settings));
+  await writePrivateSettings(normalizeSettings(SettingsSchema.parse(settings)));
 }
 
 export async function resetSettings(): Promise<void> {
@@ -85,8 +86,22 @@ export function applyCliOverrides(
       web_fetch: "auto",
       web_search: "auto",
       session_search: "auto",
+      evidence_read: "auto",
+      desktop_control: "ask",
+      plan_update: "auto",
+      phase_checkpoint: "auto",
+      sources_to_excel: "auto",
+      document_ocr: "auto",
+      document_verify: "auto",
+      document_format: "auto",
+      vision_analyze: "auto",
+      verification_status: "auto",
       git_commit: "auto",
       spawn_research: "auto",
+      service_start: "auto",
+      service_status: "auto",
+      service_stop: "auto",
+      browser_verify: "auto",
     };
   }
   if (opts.denyAll) {
@@ -100,11 +115,34 @@ export function applyCliOverrides(
       web_fetch: "deny",
       web_search: "auto",
       session_search: "auto",
+      evidence_read: "auto",
+      desktop_control: "deny",
+      plan_update: "auto",
+      phase_checkpoint: "auto",
+      sources_to_excel: "deny",
+      document_ocr: "deny",
+      document_format: "deny",
+      document_verify: "auto",
+      vision_analyze: "deny",
+      verification_status: "auto",
       git_commit: "deny",
       spawn_research: "auto",
+      service_start: "deny",
+      // Inspecting and shutting down services stays available in read-only
+      // mode: a denied stop would strand a process the agent already started.
+      service_status: "auto",
+      service_stop: "auto",
+      browser_verify: "deny",
     };
   }
-  return result;
+  return normalizeSettings(result);
+}
+
+function normalizeSettings(settings: AllyCodeSettings): AllyCodeSettings {
+  return {
+    ...settings,
+    model: normalizeProviderModelId(settings.provider, settings.model),
+  };
 }
 
 async function writePrivateSettings(settings: AllyCodeSettings): Promise<void> {

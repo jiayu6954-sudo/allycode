@@ -1,19 +1,38 @@
+import { WorkbenchPanel } from "./WorkbenchPanel.js";
+import { AccountPanel } from "./AccountPanel.js";
+import { SetupPanel } from "./SetupPanel.js";
+import { VisionPanel } from "./VisionPanel.js";
+import { TaskPlan } from "./TaskPlan.js";
+import { conversationTools, updateInlinePlan } from "../../conversation-view.js";
+import type { DesktopContentBlock } from "../../shared.js";
+import { PermissionCard } from "./PermissionCard.js";
+import { presentPermission } from "./permission-presentation.js";
+import { BUILD_INFO } from "../../../src/build-info.js";
 import { FormEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { AllyCodeSettings } from "../../../src/config/schema.js";
 import type { PermissionRequest } from "../../../src/types/permissions.js";
 import type { AgentPhase } from "../../../src/types/agent.js";
 import type { ProviderTestResult } from "../../../src/providers/diagnostics.js";
+import type { ModelCatalogResult } from "../../../src/providers/model-catalog.js";
+import type { SkillDocument } from "../../../src/skills/loader.js";
+import type { AgentMonitorReport } from "../../../src/observability/agent-monitor.js";
+import type { AgentEngineHealth, AgentEngineMode } from "../../../src/engines/types.js";
 import type {
   DesktopAgentEvent,
   DeleteSessionsRequest,
   DesktopMessage,
+  BenchmarkLabState,
+  BenchmarkRunReport,
   MemoryOverview,
+  MCPServerTestResult,
   ProviderCredentialStatus,
   SessionSummary,
   TaskSummary,
   UpdateState,
   WorkspaceEntry,
 } from "../../shared.js";
+import { isResumeIntent } from "./resume-intent.js";
+import { PhaseCheckpointSchema } from "../../../src/agent/phase-workflow.js";
 
 interface Activity {
   id: string;
@@ -26,6 +45,8 @@ interface Activity {
 type AgentDisplayPhase = AgentPhase | "idle" | "thinking";
 
 export function App(): JSX.Element {
+  const [accountOpen,setAccountOpen]=useState(false);
+  const [setupOpen,setSetupOpen]=useState(false);
   const [settings, setSettings] = useState<AllyCodeSettings | null>(null);
   const [credentialStatus, setCredentialStatus] =
     useState<ProviderCredentialStatus | null>(null);
@@ -35,11 +56,21 @@ export function App(): JSX.Element {
   const [sessionId, setSessionId] = useState<string>();
   const [taskId, setTaskId] = useState<string>();
   const [cwd, setCwd] = useState(localStorage.getItem("allycode.cwd") ?? "");
+  const workspaceRef = useRef(cwd);
+  workspaceRef.current = cwd;
   const [tree, setTree] = useState<WorkspaceEntry[]>([]);
   const [messages, setMessages] = useState<DesktopMessage[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [activities, setActivities] = useState<Activity[]>([]);
+  const [workingPlan, setWorkingPlan] = useState<NonNullable<TaskSummary["plan"]>>([]);
   const [draft, setDraft] = useState("");
+  const [sendingSteering,setSendingSteering] = useState(false);
+  const [steeringMessages,setSteeringMessages] = useState<Array<{id:string;text:string;status:"queued"|"applied"}>>([]);
   const [runId, setRunId] = useState<string>();
+  const boundRunRef = useRef<string>();
+  const startingRunRef = useRef(false);
+  const queuedEventsRef = useRef<DesktopAgentEvent[]>([]);
+  const selectionEpochRef = useRef(0);
   const [permission, setPermission] = useState<{
     requestId: string;
     request: PermissionRequest;
@@ -48,6 +79,13 @@ export function App(): JSX.Element {
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [memoryOverview, setMemoryOverview] = useState<MemoryOverview>();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false);
+  const [enginesOpen, setEnginesOpen] = useState(false);
+  const [benchmarkOpen, setBenchmarkOpen] = useState(false);
+  const [monitorOpen, setMonitorOpen] = useState(false);
+  const [monitorReport, setMonitorReport] = useState<AgentMonitorReport>();
+  const [monitorError, setMonitorError] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [notice, setNotice] = useState("");
@@ -81,6 +119,28 @@ export function App(): JSX.Element {
       unsubscribeUpdates();
     };
   }, []);
+
+  useEffect(() => {
+    if (!monitorOpen || !taskId) return;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const snapshot = await window.allycode.getMonitorReport(taskId);
+        if (active) {
+          setMonitorReport(snapshot.report);
+          setMonitorError("");
+        }
+      } catch (error) {
+        if (active) setMonitorError(localizeError(String(error)));
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 1_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [monitorOpen, taskId]);
 
   useEffect(() => {
     function closeSessionMenu(event: MouseEvent): void {
@@ -154,11 +214,13 @@ export function App(): JSX.Element {
   }
 
   async function refreshTasks(workspace?: string): Promise<void> {
-    setTasks(await window.allycode.listTasks(workspace));
+    const next = await window.allycode.listTasks(workspace);
+    if (workspace === workspaceRef.current || !workspace && !workspaceRef.current) setTasks(next);
   }
 
   async function refreshTree(workspace: string): Promise<void> {
-    setTree(await window.allycode.listWorkspace(workspace));
+    const next = await window.allycode.listWorkspace(workspace);
+    if (workspace === workspaceRef.current) setTree(next);
   }
 
   async function openMemory(): Promise<void> {
@@ -167,23 +229,32 @@ export function App(): JSX.Element {
       window.setTimeout(() => setNotice(""), 2200);
       return;
     }
-    setMemoryOverview(await window.allycode.getMemoryOverview(cwd));
+    setMemoryOverview(await window.allycode.getMemoryOverview(cwd, sessionId));
     setMemoryOpen(true);
   }
 
   function handleAgentEvent(payload: DesktopAgentEvent): void {
+    if (startingRunRef.current) { queuedEventsRef.current.push(payload); return; }
+    if (payload.runId !== boundRunRef.current) return;
     if ("event" in payload) {
       const event = payload.event;
       if (event.type === "status") setAgentPhase(event.phase);
+      else if (event.type === "stream_signal") return;
       else if (event.type === "text_delta") {
         setAgentPhase("streaming");
         appendAssistantText(event.delta);
       } else if (event.type === "thinking_delta") {
         setAgentPhase("thinking");
-        appendThinking(event.delta);
+        appendThinking();
+      } else if (event.type === "user_steering") {
+        setPermission(undefined);
+        setActivities(current=>current.map(item=>item.status==="pending"?{...item,status:"denied",result:"用户已补充要求，本操作未执行。"}:item));
+        setWorkingPlan([]);
+        setSteeringMessages(current=>current.some(item=>item.id===event.id)?current.map(item=>item.id===event.id?{...item,status:"applied"}:item):[...current,{id:event.id,text:event.text,status:"applied"}]);
+        setMessages(current=>current.some(message=>message.id===event.id)?current:[...current.map(message=>message.streaming?{...message,streaming:false}:message),{id:event.id,role:"user",content:[{type:"text",text:event.text}],timestamp:event.createdAt},{id:crypto.randomUUID(),role:"assistant",content:[],timestamp:new Date().toISOString(),streaming:true}]);
       }
       else if (event.type === "tool_pending") {
-        setActivityOpen(true);
+        updateStreamingContent(content => [...content, {type:"tool_use",toolName:event.toolName,toolId:event.toolId,input:event.input,status:"pending"}]);
         setActivities((current) => [...current, {
           id: event.toolId,
           name: event.toolName,
@@ -199,6 +270,9 @@ export function App(): JSX.Element {
         });
       } else if (event.type === "tool_denied") {
         updateActivity(event.toolId, { status: "denied" });
+      } else if (event.type === "plan_update") {
+        setWorkingPlan(event.items);
+        updateStreamingContent(content => updateInlinePlan(content, event.items));
       } else if (event.type === "error") {
         appendSystemMessage(localizeError(event.error.message));
       }
@@ -208,6 +282,7 @@ export function App(): JSX.Element {
       setPermission({ requestId: payload.requestId, request: payload.request });
     } else if (payload.type === "task_status") {
       setTaskId(payload.task.id);
+      if (payload.task.plan) setWorkingPlan(payload.task.plan);
       setTasks((current) => [
         payload.task,
         ...current.filter((task) => task.id !== payload.task.id),
@@ -216,6 +291,8 @@ export function App(): JSX.Element {
         payload.task,
         ...current.filter((task) => task.id !== payload.task.id),
       ]);
+    } else if (payload.type === "delivery_receipt") {
+      setMessages(current=>[...current,{id:`receipt-${payload.runId}`,role:"system",content:[{type:"text",text:payload.rendered}],timestamp:payload.receipt.generatedAt}]);
     } else if (payload.type === "complete") {
       setSessionId(payload.sessionId);
       setTaskId(payload.taskId);
@@ -225,7 +302,7 @@ export function App(): JSX.Element {
       setRunId(undefined);
       setAgentPhase("completed");
       void refreshSessions();
-      void refreshTasks(cwd || undefined);
+      void refreshTasks(workspaceRef.current || undefined);
     } else if (payload.type === "paused") {
       setSessionId(payload.sessionId);
       setTaskId(payload.taskId);
@@ -234,10 +311,10 @@ export function App(): JSX.Element {
       );
       setRunId(undefined);
       setAgentPhase("completed");
-      setNotice("任务已暂停，执行状态和对话检查点已保存");
-      window.setTimeout(() => setNotice(""), 2600);
+      setNotice(payload.message ?? "任务已暂停，执行状态和对话检查点已保存");
+      window.setTimeout(() => setNotice(""), payload.reason === "run_budget" ? 6200 : 2600);
       void refreshSessions();
-      void refreshTasks(cwd || undefined);
+      void refreshTasks(workspaceRef.current || undefined);
     } else if (payload.type === "fatal") {
       appendSystemMessage(localizeError(payload.message));
       setMessages((current) =>
@@ -245,7 +322,7 @@ export function App(): JSX.Element {
       );
       setRunId(undefined);
       setAgentPhase("completed");
-      void refreshTasks(cwd || undefined);
+      void refreshTasks(workspaceRef.current || undefined);
     }
   }
 
@@ -264,7 +341,8 @@ export function App(): JSX.Element {
     });
   }
 
-  function appendThinking(delta: string): void {
+  function appendThinking(): void {
+    const description = "模型正在分析任务和已有结果。下方会展示实际执行的操作与结果；此处不展示原始内部推理文本。";
     setMessages((current) => {
       const assistantIndex = findStreamingAssistant(current);
       if (assistantIndex < 0) return current;
@@ -273,9 +351,9 @@ export function App(): JSX.Element {
       const content = [...assistant.content];
       const last = content.at(-1);
       if (last?.type === "thinking") {
-        content[content.length - 1] = { ...last, text: last.text + delta };
+        return current;
       } else {
-        content.push({ type: "thinking", text: delta });
+        content.push({ type: "thinking", text: description });
       }
       next[assistantIndex] = { ...assistant, content };
       return next;
@@ -295,6 +373,14 @@ export function App(): JSX.Element {
     setActivities((current) =>
       current.map((activity) => activity.id === id ? { ...activity, ...patch } : activity)
     );
+    updateStreamingContent(content => content.map(block => block.type === "tool_use" && block.toolId === id ? {...block, ...(patch.status ? {status:patch.status} : {}), ...(patch.result !== undefined ? {result:patch.result} : {})} : block));
+  }
+
+  function updateStreamingContent(update: (content: DesktopContentBlock[]) => DesktopContentBlock[]): void {
+    setMessages(current => {
+      const index = findStreamingAssistant(current);
+      return index < 0 ? current : current.map((message, i) => i === index ? {...message,content:update(message.content)} : message);
+    });
   }
 
   async function chooseWorkspace(): Promise<string | null> {
@@ -311,6 +397,7 @@ export function App(): JSX.Element {
     setTaskId(undefined);
     setMessages([]);
     setActivities([]);
+    setWorkingPlan([]);
     stickToBottomRef.current = true;
     setShowScrollToBottom(false);
     await refreshTree(selected);
@@ -318,7 +405,22 @@ export function App(): JSX.Element {
     return selected;
   }
 
+  async function activateBenchmarkWorkspace(workspace: string): Promise<void> {
+    if (isRunning) throw new Error("请先停止当前任务，再切换到评测项目。");
+    localStorage.setItem("allycode.cwd", workspace);
+    setCwd(workspace);
+    resetConversation();
+    await Promise.all([refreshTree(workspace), refreshTasks(workspace)]);
+  }
+
   function resetConversation(): void {
+    setHistoryLoading(false);
+    setWorkingPlan([]);
+    setSteeringMessages([]);
+    selectionEpochRef.current++;
+    boundRunRef.current = undefined;
+    startingRunRef.current = false;
+    queuedEventsRef.current = [];
     setSessionId(undefined);
     setTaskId(undefined);
     setMessages([]);
@@ -343,22 +445,50 @@ export function App(): JSX.Element {
   }
 
   async function openSession(session: SessionSummary): Promise<void> {
+    if (isRunning) return;
     if (managingSessions) {
       toggleSelectedSession(session.id);
       return;
     }
+    await openHistory(session.cwd, session.id);
+  }
+
+  async function openHistory(workspace: string, savedSessionId?: string, savedTaskId?: string): Promise<boolean> {
     setSessionMenu(undefined);
-    setSessionId(session.id);
-    const matchingTask = (await window.allycode.listTasks(session.cwd))
-      .find((task) => task.sessionId === session.id);
-    setTaskId(matchingTask?.id);
-    setCwd(session.cwd);
-    localStorage.setItem("allycode.cwd", session.cwd);
-    stickToBottomRef.current = true;
-    setShowScrollToBottom(false);
-    setMessages(await window.allycode.loadSession(session.id));
-    setActivities([]);
-    await refreshTree(session.cwd);
+    boundRunRef.current = undefined;
+    const epoch = ++selectionEpochRef.current;
+    setHistoryLoading(true);
+    try {
+      const [history, workspaceTasks, workspaceTree] = await Promise.all([
+        savedSessionId ? window.allycode.loadSession(savedSessionId) : Promise.resolve([]),
+        window.allycode.listTasks(workspace),
+        window.allycode.listWorkspace(workspace),
+      ]);
+      if (epoch !== selectionEpochRef.current) return false;
+      const selectedTask = workspaceTasks.find(task => savedTaskId ? task.id === savedTaskId : task.sessionId === savedSessionId);
+      setSessionId(savedSessionId);
+      setTaskId(selectedTask?.id);
+      const lastPlan = history.flatMap(message => message.content).filter(block => block.type === "plan").at(-1);
+      setWorkingPlan(selectedTask?.plan?.length ? selectedTask.plan : lastPlan?.items ?? []);
+      setDraft("");
+      setSteeringMessages([]);
+      setPermission(undefined);
+      setCwd(workspace);
+      localStorage.setItem("allycode.cwd", workspace);
+      setTree(workspaceTree);
+      setTasks(workspaceTasks);
+      setMessages(history);
+      setActivities(conversationTools(history).map((block,index) => ({id:`saved-${index}-${block.toolId}`,name:block.toolName,detail:summarize(block.input),status:block.status,result:block.result})));
+      setAgentPhase("idle");
+      stickToBottomRef.current = true;
+      setShowScrollToBottom(false);
+      return true;
+    } catch (error) {
+      if (epoch === selectionEpochRef.current) setNotice(`加载历史记录失败：${localizeError(String(error))}`);
+      return false;
+    } finally {
+      if (epoch === selectionEpochRef.current) setHistoryLoading(false);
+    }
   }
 
   async function exportSession(session: SessionSummary): Promise<void> {
@@ -438,25 +568,18 @@ export function App(): JSX.Element {
     setSelectedSessions(new Set(sessions.filter((session) => allowed.has(session.id)).map((session) => session.id)));
   }
 
-  async function openTask(task: TaskSummary): Promise<void> {
-    setTaskId(task.id);
-    setCwd(task.cwd);
-    localStorage.setItem("allycode.cwd", task.cwd);
-    stickToBottomRef.current = true;
-    setShowScrollToBottom(false);
-    setSessionId(task.sessionId);
-    setMessages(task.sessionId ? await window.allycode.loadSession(task.sessionId) : []);
-    setActivities([]);
-    await Promise.all([refreshTree(task.cwd), refreshTasks(task.cwd)]);
+  async function openTask(task: TaskSummary): Promise<boolean> {
+    if (isRunning) return false;
+    return openHistory(task.cwd, task.sessionId, task.id);
   }
 
   async function resumeTask(task: TaskSummary): Promise<void> {
     if (isRunning || !task.resumable) return;
-    await openTask(task);
+    if (!await openTask(task)) return;
     setMessages((current) => [...current, {
       id: crypto.randomUUID(),
       role: "assistant",
-      content: [],
+      content: task.plan?.length ? [{type:"plan",items:task.plan}] : [],
       timestamp: new Date().toISOString(),
       streaming: true,
     }]);
@@ -464,9 +587,13 @@ export function App(): JSX.Element {
     setElapsedSeconds(0);
     setAgentPhase("waiting_model");
     try {
-      const started = await window.allycode.resumeTask(task.id);
+      startingRunRef.current = true;
+      const started = await window.allycode.resumeTask(task.id).catch((error: unknown) => { startingRunRef.current = false; queuedEventsRef.current = []; throw error; });
+      boundRunRef.current = started.runId;
+      startingRunRef.current = false;
       setRunId(started.runId);
       setTaskId(started.taskId);
+      queuedEventsRef.current.splice(0).forEach(handleAgentEvent);
     } catch (error) {
       appendSystemMessage(localizeError(String(error)));
       setMessages((current) => current.map((message) =>
@@ -478,8 +605,20 @@ export function App(): JSX.Element {
 
   async function submit(event: FormEvent): Promise<void> {
     event.preventDefault();
+    if (historyLoading || startingRunRef.current) return;
     const prompt = draft.trim();
-    if (!prompt || isRunning) return;
+    if (!prompt || sendingSteering) return;
+    if (isRunning && runId) {
+      setSendingSteering(true);
+      try {
+        const accepted = await window.allycode.steerAgent(runId,prompt);
+        setSteeringMessages(current=>current.some(item=>item.id===accepted.id)?current:[...current,{id:accepted.id,text:prompt,status:"queued"}]);
+        setDraft(current=>current.trim()===prompt?"":current);
+        setPermission(undefined);
+      } catch(error) { setNotice(localizeError(String(error))); }
+      finally {setSendingSteering(false);}
+      return;
+    }
     let workspace = cwd;
     if (!workspace) {
       workspace = await chooseWorkspace() ?? "";
@@ -500,8 +639,19 @@ export function App(): JSX.Element {
       window.setTimeout(() => setNotice(""), 2600);
       return;
     }
+    const resumableTask = taskId
+      ? [...tasks, ...allTasks].find((task) => task.id === taskId && task.resumable)
+      : undefined;
+    if (resumableTask && isResumeIntent(prompt)) {
+      setDraft("");
+      setNotice("已识别为恢复任务，将从最新检查点继续");
+      window.setTimeout(() => setNotice(""), 2600);
+      await resumeTask(resumableTask);
+      return;
+    }
     setDraft("");
-    setActivities([]);
+    setWorkingPlan([]);
+    setSteeringMessages([]);
     setRunStartedAt(Date.now());
     setElapsedSeconds(0);
     setAgentPhase("waiting_model");
@@ -521,14 +671,18 @@ export function App(): JSX.Element {
       streaming: true,
     }]);
     try {
+      startingRunRef.current = true;
       const started = await window.allycode.startAgent({
         prompt,
         cwd: workspace,
         sessionId,
         taskId,
-      });
+      }).catch((error: unknown) => { startingRunRef.current = false; queuedEventsRef.current = []; throw error; });
+      boundRunRef.current = started.runId;
+      startingRunRef.current = false;
       setRunId(started.runId);
       setTaskId(started.taskId);
+      queuedEventsRef.current.splice(0).forEach(handleAgentEvent);
     } catch (error) {
       appendSystemMessage(localizeError(String(error)));
       setMessages((current) =>
@@ -538,6 +692,22 @@ export function App(): JSX.Element {
       );
       setAgentPhase("completed");
     }
+  }
+
+  async function continuePhase(toolId:string,optionId?:string):Promise<void> {
+    if(!taskId || isRunning || historyLoading || startingRunRef.current) return;
+    const sourceTaskId=taskId;
+    startingRunRef.current=true;
+    try {
+      const started=await window.allycode.continuePhase(sourceTaskId,toolId,optionId);
+      const fresh=started.taskId!==sourceTaskId;
+      if(fresh) setSessionId(undefined);
+      setMessages(current=>[...(fresh?[]:current),{id:crypto.randomUUID(),role:"user",content:[{type:"text",text:optionId?`选择方案 ${optionId}`:"根据已保存的交接记录开始下一阶段"}],timestamp:new Date().toISOString()},{id:crypto.randomUUID(),role:"assistant",content:[],timestamp:new Date().toISOString(),streaming:true}]);
+      setWorkingPlan([]);setDraft("");setSteeringMessages([]);
+      setRunStartedAt(Date.now());setElapsedSeconds(0);setAgentPhase("waiting_model");
+      boundRunRef.current=started.runId;setRunId(started.runId);setTaskId(started.taskId);
+      startingRunRef.current=false;queuedEventsRef.current.splice(0).forEach(handleAgentEvent);
+    } catch(error) {startingRunRef.current=false;queuedEventsRef.current=[];appendSystemMessage(localizeError(String(error)));}
   }
 
   async function stop(): Promise<void> {
@@ -560,7 +730,27 @@ export function App(): JSX.Element {
     window.setTimeout(() => setNotice(""), 1800);
   }
 
+  async function saveCapabilitySettings(next: AllyCodeSettings): Promise<void> {
+    setSettings(await window.allycode.saveSettings(next));
+    setNotice("能力配置已保存，将在下一个任务生效");
+    window.setTimeout(() => setNotice(""), 2200);
+  }
+
+  async function saveEngineSettings(next: AllyCodeSettings): Promise<void> {
+    setSettings(await window.allycode.saveSettings(next));
+    setEnginesOpen(false);
+    setNotice("Agent 引擎设置已保存，将在下一个任务生效");
+    window.setTimeout(() => setNotice(""), 2200);
+  }
+
   const latestActivity = activities.at(-1);
+  async function attachVision():Promise<void> {
+    const workspace=cwd||await chooseWorkspace();if(!workspace)return;
+    const epoch=selectionEpochRef.current;
+    try {const files=await window.allycode.importVisionFiles(workspace);if(epoch!==selectionEpochRef.current||workspaceRef.current!==workspace)return;
+      if(files.length)setDraft(current=>current+"\n请使用内置视觉分析以下项目内资料：\n"+files.map(file=>JSON.stringify(file)).join("\n"));
+    }catch(error){appendSystemMessage(localizeError(String(error)));}
+  }
   const emptyState = messages.length === 0;
 
   function renderComposer(className = ""): JSX.Element {
@@ -584,16 +774,18 @@ export function App(): JSX.Element {
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               event.currentTarget.form?.requestSubmit();
             }
           }}
-          placeholder="输入任务，例如：分析项目架构并修复当前问题…"
-          disabled={isRunning}
+          placeholder={isRunning ? "随时补充要求或调整方向，在下一个安全步骤处理…" : "输入任务，例如：分析项目架构并修复当前问题…"}
+          aria-label={isRunning ? "补充任务要求" : "输入任务"}
+          maxLength={20000}
           rows={3}
         />
         <div className="composer-footer">
+          <button type="button" className="attach-vision" title="选择图片或 PDF，复制到当前项目" aria-label="添加图片或 PDF" disabled={historyLoading} onClick={()=>void attachVision()}>＋ 图片/PDF</button>
           <span>
             {latestActivity?.status === "running"
               ? `正在执行：${toolLabel(latestActivity.name)}`
@@ -601,11 +793,10 @@ export function App(): JSX.Element {
                 ? "回车发送 · Shift+回车换行"
                 : "可先输入任务，发送时会提示选择项目文件夹"}
           </span>
-          {isRunning ? (
+          {isRunning && (
             <button type="button" className="stop" title="暂停任务" aria-label="暂停任务" onClick={() => void stop()}>Ⅱ</button>
-          ) : (
-            <button type="submit" disabled={!draft.trim()}>↑</button>
           )}
+          <button type="submit" aria-label={isRunning?"发送补充":"发送任务"} disabled={!draft.trim() || sendingSteering || historyLoading}>{sendingSteering?"发送中":isRunning?"补充 ↑":"↑"}</button>
         </div>
       </form>
       </div>
@@ -617,7 +808,7 @@ export function App(): JSX.Element {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">AC</div>
-          <div><strong>AllyCode</strong><span>智能编程助手</span></div>
+          <div><strong>AllyCode</strong><span title={BUILD_INFO.sourceHash}>{BUILD_INFO.version}</span></div>
         </div>
 
         <button className="new-chat" disabled={isRunning} onClick={() => setNewTaskOpen(true)}>
@@ -633,25 +824,27 @@ export function App(): JSX.Element {
             <span className="folder">◆</span>
             <span>{projectName}</span>
           </button>
+          {cwd && <div className="workspace-path project-path" title={cwd}>{cwd}</div>}
           <div className="file-tree">
             <Tree entries={tree} />
           </div>
         </section>
 
-        {tasks.some((task) => !["completed", "cancelled"].includes(task.status)) && (
+        {allTasks.some((task) => !["completed", "cancelled"].includes(task.status)) && (
           <section className="sidebar-section active-tasks">
             <header>
-              <span>进行中的任务</span>
-              <span>{tasks.filter((task) => !["completed", "cancelled"].includes(task.status)).length}</span>
+              <span>各项目待继续任务</span>
+              <span>{allTasks.filter((task) => !["completed", "cancelled"].includes(task.status)).length}</span>
             </header>
             <div className="task-list">
-              {tasks
+              {allTasks
                 .filter((task) => !["completed", "cancelled"].includes(task.status))
-                .slice(0, 6)
+                .slice(0, 20)
                 .map((task) => (
                   <div className={`task-row ${task.id === taskId ? "active" : ""}`} key={task.id}>
-                    <button className="task-open" onClick={() => void openTask(task)}>
+                    <button className="task-open" disabled={isRunning} title={task.cwd} onClick={() => void openTask(task)}>
                       <span>{task.title}</span>
+                      <small className="project-path">{task.cwd}</small>
                       <small>{taskStatusLabel(task.status)}</small>
                     </button>
                     {task.resumable && (
@@ -693,9 +886,10 @@ export function App(): JSX.Element {
                     onChange={() => toggleSelectedSession(session.id)}
                   />
                 )}
-                <button className="session-open" onClick={() => void openSession(session)}>
+                <button className="session-open" disabled={isRunning} title={session.cwd} onClick={() => void openSession(session)}>
                   <span>{session.title}</span>
                   <small>{relativeTime(session.updatedAt)}</small>
+                  <small className="project-path">{session.cwd}</small>
                 </button>
                 {!managingSessions && (
                   <div className="session-actions">
@@ -734,11 +928,23 @@ export function App(): JSX.Element {
           </div>
         </section>
 
-        <button className="settings-button" onClick={() => setSettingsOpen(true)}>
-          <span>⚙</span> 设置
-        </button>
+        <div className="sidebar-footer">
+          <button onClick={() => setWorkbenchOpen(true)}><span className="sidebar-icon">▧</span><span><strong>工作台与能力安装</strong><small>环境 · 成果 · 版本恢复</small></span></button>
+          <button onClick={() => setSetupOpen(true)}><span className="sidebar-icon">✓</span><span><strong>开始设置</strong><small>环境检测与一键准备</small></span></button>
+          <button onClick={() => setAccountOpen(true)}><span className="sidebar-icon">＠</span><span><strong>邮箱注册／登录</strong><small>账号与本地使用</small></span></button>
+          <button onClick={() => setEnginesOpen(true)}><span className="sidebar-icon">▣</span><span><strong>Agent 引擎</strong><small>{settings ? engineModeLabel(settings.agentEngine.mode) : "正在检测"}</small></span></button>
+          <button onClick={() => setBenchmarkOpen(true)}><span className="sidebar-icon">▤</span><span><strong>评测实验室</strong><small>外部验收 · 不看自述</small></span></button>
+          <button onClick={() => setSettingsOpen(true)}>
+            <span className={`sidebar-status ${settings && credentialStatus?.[settings.provider] ? "" : "unconfigured"}`} />
+            <span><strong>模型与 API</strong><small>{settings ? `${providerLabel(settings.provider)} · ${settings.model}` : "正在加载"}</small></span>
+          </button>
+          <button onClick={() => setCapabilitiesOpen(true)}><span className="sidebar-icon">◇</span><span><strong>Skills 与连接器</strong><small>工作流与 MCP 工具</small></span></button>
+          <button onClick={() => setMonitorOpen(true)}><span className="sidebar-icon">◎</span><span><strong>Agent 检测台</strong><small>{taskId ? "实时诊断当前任务" : "开始任务后可观测"}</small></span></button>
+          <button onClick={() => setSettingsOpen(true)}><span className="sidebar-icon">⚙</span><span><strong>应用设置</strong><small>安全、记忆与更新</small></span></button>
+        </div>
       </aside>
 
+      {workbenchOpen && <WorkbenchPanel cwd={cwd} running={isRunning} onClose={() => setWorkbenchOpen(false)} />}
       <main className="conversation">
         <header className="topbar">
           <div>
@@ -746,24 +952,6 @@ export function App(): JSX.Element {
             <span>{cwd || "输入任务，发送时选择项目文件夹"}</span>
           </div>
           <div className="topbar-actions">
-            <button
-              className="model-pill"
-              onClick={() => setSettingsOpen(true)}
-              title="切换模型供应商、模型和 API 密钥"
-            >
-              <span className={`status-dot ${
-                settings && credentialStatus?.[settings.provider] ? "" : "unconfigured"
-              }`} />
-              <span>
-                <small>模型与 API</small>
-                <strong>
-                  {settings ? providerLabel(settings.provider) : "加载中"}
-                  {" · "}
-                  {settings?.model ?? "未配置"}
-                </strong>
-              </span>
-              <b>设置</b>
-            </button>
             <button
               className="activity-toggle"
               onClick={() => void openMemory()}
@@ -779,6 +967,7 @@ export function App(): JSX.Element {
           </div>
         </header>
 
+
         <div
           className={`messages ${emptyState ? "empty" : ""}`}
           ref={messagesRef}
@@ -788,7 +977,7 @@ export function App(): JSX.Element {
             <div className="welcome">
               <div className="welcome-mark">AC</div>
               <h1>希望 AllyCode 完成什么任务？</h1>
-              <p>可直接输入需求。AllyCode 会理解项目、在授权后执行工具，并在不同会话中保留相关项目记忆。</p>
+              <p>可直接输入需求。新建任务拥有独立记忆；重新打开历史任务可继续原来的工作。项目规则文件由同项目任务共同使用。</p>
               {cwd && (
                 <div className="selected-workspace">
                   <div><span>当前项目目录</span><strong>{cwd}</strong></div>
@@ -803,12 +992,14 @@ export function App(): JSX.Element {
                 </button>
               </div>
               <div className="suggestions">
-                {["分析并说明这个项目", "查找并修复失败的测试", "规划并实现一个新功能"].map((text) => (
+                {["修复这个网站的按钮，并实际点击验证结果", "整理项目中的表格文件，生成可核对的统计报告", "制作客户登记与导出页面，验证填写、保存和导出"].map((text) => (
                   <button key={text} onClick={() => setDraft(text)}>{text}<span>↗</span></button>
                 ))}
               </div>
             </div>
-          ) : messages.map((message) => <Message key={message.id} message={message} />)}
+          ) : messages.map((message) => <Message key={message.id} message={message} onPhase={continuePhase} phaseEnabled={!isRunning && !historyLoading} latestPhaseToolId={conversationTools(messages).filter(block=>block.toolName==="phase_checkpoint"&&block.status==="success").at(-1)?.toolId} />)}
+        {steeringMessages.length>0 && <div className="steering-receipts" aria-live="polite">{steeringMessages.map(item=><div key={item.id}><strong>{item.status==="applied"?"✓ 已加入后续步骤":"已收到，等待当前步骤结束"}</strong><span>{item.text}</span></div>)}</div>}
+          {historyLoading && <p role="status">正在加载该项目的对话和执行记录…</p>}
         </div>
 
         {showScrollToBottom && (
@@ -828,7 +1019,18 @@ export function App(): JSX.Element {
           <strong>执行记录</strong>
           <div><span>{activities.length}</span><button onClick={() => setActivityOpen(false)}>×</button></div>
         </header>
-        {activities.length === 0 ? (
+        {workingPlan.length > 0 && (
+          <div className="working-plan">
+            <strong>工作计划</strong>
+            {workingPlan.map((item, index) => (
+              <div className={item.status} key={`${index}-${item.step}`}>
+                <span>{item.status === "completed" ? "✓" : item.status === "in_progress" ? "•" : "○"}</span>
+                <p>{item.step}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        {activities.length === 0 && workingPlan.length === 0 ? (
           <div className="activity-empty">
             <span>◇</span>
             <p>工具调用、文件修改和命令输出会显示在这里。</p>
@@ -840,24 +1042,7 @@ export function App(): JSX.Element {
         )}
       </aside>
 
-      {permission && (
-        <div className="modal-backdrop">
-          <div className="permission-card">
-            <span className={`risk ${permission.request.riskLevel}`}>{riskLabel(permission.request.riskLevel)}</span>
-            <h2>是否允许执行此操作？</h2>
-            <p className="permission-reason">{permissionReason(permission.request)}</p>
-            <p>{permission.request.description}</p>
-            <pre>{summarize(permission.request.input)}</pre>
-            <div className="modal-actions">
-              <button onClick={() => void resolvePermission("deny")}>拒绝</button>
-              {permission.request.riskLevel !== "dangerous" && (
-                <button onClick={() => void resolvePermission("allow-session")}>本次会话允许同类操作</button>
-              )}
-              <button className="primary" onClick={() => void resolvePermission("allow")}>仅允许一次</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {permission && <PermissionCard request={permission.request} cwd={cwd} onDecision={resolvePermission}/>}
 
       {newTaskOpen && (
         <div className="modal-backdrop">
@@ -921,8 +1106,8 @@ export function App(): JSX.Element {
           <div className="memory-card">
             <header>
               <div>
-                <h2>项目记忆</h2>
-                <p>AllyCode 在本地保存的用户偏好、项目事实、技术决策和解决经验</p>
+                <h2>当前任务记忆</h2>
+                <p>只显示当前任务会话的偏好、事实、决策和经验；新建任务不会继承这些内容。</p>
               </div>
               <button aria-label="关闭" onClick={() => setMemoryOpen(false)}>×</button>
             </header>
@@ -954,13 +1139,281 @@ export function App(): JSX.Element {
           onDownloadUpdate={async () => setUpdateState(await window.allycode.downloadUpdate())}
         />
       )}
-      {settings && !settings.onboarding.completed && (
+      {capabilitiesOpen && settings && (
+        <CapabilityCenter
+          settings={settings}
+          onClose={() => setCapabilitiesOpen(false)}
+          onSaveSettings={saveCapabilitySettings}
+        />
+      )}
+      {enginesOpen && settings && (
+        <AgentEngineCenter
+          settings={settings}
+          onClose={() => setEnginesOpen(false)}
+          onSave={saveEngineSettings}
+        />
+      )}
+      {benchmarkOpen && (
+        <BenchmarkLab
+          workspace={cwd}
+          onClose={() => setBenchmarkOpen(false)}
+          onActivate={activateBenchmarkWorkspace}
+        />
+      )}
+      {monitorOpen && (
+        <AgentMonitorConsole
+          report={monitorReport}
+          taskId={taskId}
+          error={monitorError}
+          onClose={() => setMonitorOpen(false)}
+          onExport={async () => {
+            if (!taskId) return;
+            const result = await window.allycode.exportMonitorReport(taskId);
+            if (!result.canceled) {
+              setNotice(`脱敏诊断报告已导出：${result.filePath ?? ""}`);
+              window.setTimeout(() => setNotice(""), 3200);
+            }
+          }}
+        />
+      )}
+      {settings && !settings.onboarding.completed && !settingsOpen && (
         <FirstRunWizard
           settings={settings}
           onComplete={saveSettings}
+          onAccount={()=>setAccountOpen(true)}
+          onSetup={()=>setSetupOpen(true)}
         />
       )}
+      {setupOpen&&<SetupPanel onClose={()=>setSetupOpen(false)} onModel={()=>{setSetupOpen(false);setSettingsOpen(true);}} onAccount={()=>setAccountOpen(true)}/>}
+      {accountOpen&&<AccountPanel onClose={()=>setAccountOpen(false)}/>}
       {notice && <div className="toast">{notice}</div>}
+    </div>
+  );
+}
+
+function AgentMonitorConsole({
+  report,
+  taskId,
+  error,
+  onClose,
+  onExport,
+}: {
+  report?: AgentMonitorReport;
+  taskId?: string;
+  error: string;
+  onClose: () => void;
+  onExport: () => Promise<void>;
+}): JSX.Element {
+  const measured = report?.scores.filter((score) => score.status === "measured") ?? [];
+  const aggregate = measured.length
+    ? Math.round(measured.reduce((sum, score) => sum + (score.score ?? 0), 0) / measured.length)
+    : null;
+  return (
+    <div className="monitor-backdrop">
+      <section className="monitor-console">
+        <header>
+          <div>
+            <span className="monitor-live"><i /> 本地实时观测</span>
+            <h2>Agent 检测台</h2>
+            <p>{report ? `${report.task.title} · ${report.task.engine ?? "native"} · ${report.task.model ?? "模型待记录"}` : taskId ? "正在读取任务事件…" : "开始或打开一个任务后显示真实诊断"}</p>
+          </div>
+          <div className="monitor-actions"><button disabled={!report} onClick={() => void onExport()}>导出脱敏报告</button><button aria-label="关闭" onClick={onClose}>×</button></div>
+        </header>
+        {!taskId ? (
+          <div className="monitor-empty"><span>◎</span><h3>暂无可监控任务</h3><p>先在项目中启动真实任务，再打开检测台。检测台不会主动调用模型或读取 API 密钥。</p></div>
+        ) : error ? <div className="settings-error">{error}</div> : !report ? (
+          <div className="monitor-empty"><p>正在构建实时诊断视图…</p></div>
+        ) : (
+          <div className="monitor-body">
+            <div className="monitor-summary">
+              <div className="monitor-grade"><strong>{aggregate ?? "—"}</strong><span>{aggregate === null ? "证据不足" : "已测维度均分"}</span></div>
+              <div><small>状态</small><strong>{taskStatusLabel(report.task.status)}</strong></div>
+              <div><small>工具</small><strong>{report.metrics.toolSuccesses}/{report.metrics.toolCalls}</strong></div>
+              <div><small>告警</small><strong>{report.alerts.length}</strong></div>
+              <div><small>模型轮次</small><strong>{report.metrics.modelTurns}</strong></div>
+              <div><small>首次响应</small><strong>{report.metrics.firstSignalMs === null ? "—" : `${(report.metrics.firstSignalMs / 1000).toFixed(1)}s`}</strong></div>
+              <div><small>独立失败</small><strong>{report.metrics.failureIncidents}</strong></div>
+              <div><small>缓存读取</small><strong>{report.metrics.cacheReadTokens.toLocaleString()}</strong></div>
+            </div>
+            <div className="monitor-grid">
+              <div className="monitor-column">
+                <section className="monitor-section">
+                  <header><strong>分项证据</strong><span>不以单一总分替代验收</span></header>
+                  <div className="score-list">
+                    {report.scores.map((score) => (
+                      <div key={score.dimension}>
+                        <span>{score.label}</span>
+                        <div><i style={{ width: `${score.score ?? 0}%` }} /></div>
+                        <strong>{score.score ?? "未评估"}</strong>
+                        <small>{score.evidence}</small>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+                <section className="monitor-section">
+                  <header><strong>规则告警</strong><span>{report.alerts.length}</span></header>
+                  {report.alerts.length === 0 ? <div className="monitor-none">当前未触发确定性告警；这不代表业务逻辑已经通过。</div> : (
+                    <div className="alert-list">{report.alerts.map((alert) => <div className={alert.severity} key={alert.id}><span>{alert.severity === "critical" ? "!" : "△"}</span><div><strong>{alert.title}</strong><p>{alert.detail}</p><small>证据事件：{alert.evidenceEventIds.join("、") || "无"}</small></div></div>)}</div>
+                  )}
+                </section>
+              </div>
+              <div className="monitor-column">
+                <section className="monitor-section monitor-timeline-section">
+                  <header><strong>实时事件</strong><span>最近 {report.timeline.length}</span></header>
+                  <div className="monitor-timeline">{[...report.timeline].reverse().map((item) => <div className={item.severity} key={item.id}><i /><div><strong>{item.title}</strong><p>{item.detail}</p><small>#{item.id} · {new Date(item.createdAt).toLocaleTimeString("zh-CN", { hour12: false })}</small></div></div>)}</div>
+                </section>
+              </div>
+            </div>
+            <footer>完全本地 · 已分析 {report.metrics.analyzedEventCount.toLocaleString()} 条结构化事件 / 总计 {report.metrics.eventCount.toLocaleString()} 条 · 不记录隐藏思维 · 不导出密钥或完整工具输出 · 语义漂移需要结合需求与产物复审</footer>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function CapabilityCenter({
+  settings,
+  onClose,
+  onSaveSettings,
+}: {
+  settings: AllyCodeSettings;
+  onClose: () => void;
+  onSaveSettings: (settings: AllyCodeSettings) => Promise<void>;
+}): JSX.Element {
+  const [tab, setTab] = useState<"skills" | "connectors">("skills");
+  const [skills, setSkills] = useState<SkillDocument[]>([]);
+  const [skillDraft, setSkillDraft] = useState<SkillDocument>();
+  const [servers, setServers] = useState(() => structuredClone(settings.mcpServers));
+  const [mcpResults, setMcpResults] = useState<MCPServerTestResult[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void window.allycode.listSkills().then(setSkills).catch((reason) => setError(localizeError(String(reason))));
+  }, []);
+
+  async function persistSkill(skill: SkillDocument): Promise<void> {
+    setBusy(true);
+    setError("");
+    try {
+      setSkills(await window.allycode.saveSkill(skill));
+      setSkillDraft(undefined);
+    } catch (reason) {
+      setError(localizeError(String(reason)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSkill(skill: SkillDocument): Promise<void> {
+    if (!window.confirm(`确定删除 Skill“${skill.name}”吗？此操作不能撤销。`)) return;
+    setSkills(await window.allycode.deleteSkill(skill.id));
+  }
+
+  function updateServer(index: number, patch: Partial<(typeof servers)[number]>): void {
+    setMcpResults([]);
+    setServers((current) => current.map((server, position) =>
+      position === index ? { ...server, ...patch } : server
+    ));
+  }
+
+  async function saveConnectors(): Promise<void> {
+    setBusy(true);
+    setError("");
+    try {
+      await onSaveSettings({ ...settings, mcpServers: servers });
+    } catch (reason) {
+      setError(localizeError(String(reason)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testConnectors(): Promise<void> {
+    setBusy(true);
+    setError("");
+    setMcpResults([]);
+    try {
+      setMcpResults(await window.allycode.testMcpServers(servers.filter((server) => server.enabled)));
+    } catch (reason) {
+      setError(localizeError(String(reason)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="capability-card">
+        <header>
+          <div><h2>Skill 与连接器</h2><p>把可复用工作流和外部工具接入真实 Agent 任务</p></div>
+          <button aria-label="关闭" onClick={onClose}>×</button>
+        </header>
+        <div className="capability-tabs">
+          <button className={tab === "skills" ? "active" : ""} onClick={() => setTab("skills")}>Skills <span>{skills.filter((skill) => skill.enabled).length}</span></button>
+          <button className={tab === "connectors" ? "active" : ""} onClick={() => setTab("connectors")}>MCP 连接器 <span>{servers.filter((server) => server.enabled).length}</span></button>
+        </div>
+        {tab === "skills" ? (
+          <div className="capability-content">
+            <div className="capability-intro">
+              <p>Skill 是按触发词自动启用的本地 Markdown 工作流。它增强执行规范，但不等于可执行插件。</p>
+              <div><button onClick={() => setSkillDraft({ id: "", name: "", triggers: [], body: "", enabled: true })}>新建 Skill</button><button onClick={() => void window.allycode.openSkillsFolder()}>打开本地目录</button></div>
+            </div>
+            {skillDraft && (
+              <div className="skill-editor">
+                <div className="settings-inline-grid">
+                  <label>标识（英文）<input disabled={skills.some((skill) => skill.id === skillDraft.id)} value={skillDraft.id} placeholder="code-review" onChange={(event) => setSkillDraft({ ...skillDraft, id: event.target.value })} /></label>
+                  <label>名称<input value={skillDraft.name} placeholder="代码审查" onChange={(event) => setSkillDraft({ ...skillDraft, name: event.target.value })} /></label>
+                </div>
+                <label>触发词（用逗号分隔）<input value={skillDraft.triggers.join(", ")} placeholder="审查, review" onChange={(event) => setSkillDraft({ ...skillDraft, triggers: event.target.value.split(/[,，]/).map((item) => item.trim()).filter(Boolean) })} /></label>
+                <label>工作流说明<textarea value={skillDraft.body} placeholder="说明 Agent 应按什么步骤完成任务……" onChange={(event) => setSkillDraft({ ...skillDraft, body: event.target.value })} /></label>
+                <div className="inline-actions"><button onClick={() => setSkillDraft(undefined)}>取消</button><button className="primary" disabled={busy || !skillDraft.id || !skillDraft.name || !skillDraft.body} onClick={() => void persistSkill(skillDraft)}>保存 Skill</button></div>
+              </div>
+            )}
+            <div className="skill-list">
+              {skills.map((skill) => (
+                <div className={`skill-row ${skill.enabled ? "" : "disabled"}`} key={skill.id}>
+                  <div><strong>{skill.name}</strong><small>{skill.triggers.length ? `触发：${skill.triggers.join("、")}` : "始终启用"}</small></div>
+                  <label className="compact-toggle"><input type="checkbox" checked={skill.enabled} onChange={(event) => void persistSkill({ ...skill, enabled: event.target.checked })} />启用</label>
+                  <button onClick={() => setSkillDraft(structuredClone(skill))}>编辑</button>
+                  <button onClick={() => void removeSkill(skill)}>删除</button>
+                </div>
+              ))}
+              {skills.length === 0 && <div className="capability-empty">暂无 Skill。可以新建一个工作流或打开本地目录导入 Markdown。</div>}
+            </div>
+          </div>
+        ) : (
+          <div className="capability-content">
+            <div className="capability-warning"><strong>实验性连接器</strong><span>stdio 会在宿主机启动第三方程序。只添加你信任的服务；未知写操作仍需逐次授权。</span></div>
+            <div className="connector-list">
+              {servers.map((server, index) => (
+                <div className="connector-row" key={`${index}-${server.name}`}>
+                  <div className="connector-heading">
+                    <input value={server.name} aria-label="连接器名称" placeholder="连接器名称" onChange={(event) => updateServer(index, { name: event.target.value })} />
+                    <select value={server.transport} onChange={(event) => updateServer(index, { transport: event.target.value as "stdio" | "http" })}><option value="http">HTTP</option><option value="stdio">本地 stdio</option></select>
+                    <label className="compact-toggle"><input type="checkbox" checked={server.enabled} onChange={(event) => updateServer(index, { enabled: event.target.checked })} />启用</label>
+                    <button aria-label="移除连接器" onClick={() => setServers((current) => current.filter((_, position) => position !== index))}>删除</button>
+                  </div>
+                  {server.transport === "http" ? (
+                    <input value={server.url ?? ""} placeholder="https://example.com/mcp" onChange={(event) => updateServer(index, { url: event.target.value })} />
+                  ) : (
+                    <div className="settings-inline-grid"><input value={server.command ?? ""} placeholder="命令，例如 npx" onChange={(event) => updateServer(index, { command: event.target.value })} /><input value={(server.args ?? []).join(" ")} placeholder="参数（空格分隔）" onChange={(event) => updateServer(index, { args: event.target.value.split(/\s+/).filter(Boolean) })} /></div>
+                  )}
+                  {mcpResults.find((result) => result.name === server.name) && (() => {
+                    const result = mcpResults.find((item) => item.name === server.name)!;
+                    return <div className={`connector-result ${result.ok ? "passed" : "failed"}`}><strong>{result.ok ? `已连接 · ${result.toolCount} 个工具` : "连接失败"}</strong><span>{result.ok ? `${result.tools.join("、") || "服务未提供工具"} · ${result.latencyMs} ms` : result.error}</span></div>;
+                  })()}
+                </div>
+              ))}
+            </div>
+            <button className="add-connector" onClick={() => setServers((current) => [...current, { name: `connector-${current.length + 1}`, enabled: true, transport: "http", url: "" }])}>＋ 添加 MCP 连接器</button>
+            <small className="security-note">Alpha.9 不在界面保存连接器密钥。需要密钥的连接器暂时通过可信本地服务代理，正式插件密钥库将在后续版本完成。</small>
+            <div className="inline-actions"><button disabled={busy || servers.every((server) => !server.enabled)} onClick={() => void testConnectors()}>{busy ? "正在连接…" : "测试已启用连接器"}</button><button className="primary" disabled={busy} onClick={() => void saveConnectors()}>保存连接器</button></div>
+          </div>
+        )}
+        {error && <div className="settings-error">{error}</div>}
+      </div>
     </div>
   );
 }
@@ -974,7 +1427,7 @@ function MemorySection({ title, content }: { title: string; content: string }): 
   );
 }
 
-function Message({ message }: { message: DesktopMessage }): JSX.Element {
+function Message({ message,onPhase,phaseEnabled,latestPhaseToolId }: { message: DesktopMessage;onPhase:(toolId:string,optionId?:string)=>Promise<void>;phaseEnabled:boolean;latestPhaseToolId?:string }): JSX.Element {
   return (
     <article className={`message ${message.role}`}>
       <div className="avatar">{message.role === "user" ? "我" : message.role === "assistant" ? "AC" : "!"}</div>
@@ -982,11 +1435,28 @@ function Message({ message }: { message: DesktopMessage }): JSX.Element {
         <header>{message.role === "assistant" ? "AllyCode" : message.role === "user" ? "你" : "系统"}</header>
         {message.content.map((block, index) => {
           if (block.type === "text") return <TextContent key={index} text={block.text} />;
-          if (block.type === "thinking") return <details key={index}><summary>思考过程</summary><p>{block.text}</p></details>;
+          if (block.type === "thinking") return <details key={index}><summary>执行说明</summary><p>{block.text}</p></details>;
+          if (block.type === "plan") return <TaskPlan key={index} items={block.items} running={Boolean(message.streaming)}/>;
+          if (block.type === "tool_use") {
+            if(block.toolName==="phase_checkpoint"&&block.status==="success") {
+              const parsed=PhaseCheckpointSchema.safeParse(block.input);
+              if(parsed.success) return <section className="task-plan" key={index} aria-label="阶段选择"><strong>{parsed.data.title}</strong><p>{parsed.data.kind==="decision"?"请选择方案，或在输入框补充修改意见。":"本阶段已保存；下一阶段可使用独立对话与清单。"}</p><div className="inline-actions">{parsed.data.kind==="decision"?parsed.data.options.map(option=><button key={option.id} title={option.tradeoff} disabled={!phaseEnabled||block.toolId!==latestPhaseToolId} onClick={()=>void onPhase(block.toolId,option.id)}>选择 {option.id} · {option.title}</button>):<button disabled={!phaseEnabled||block.toolId!==latestPhaseToolId} onClick={()=>void onPhase(block.toolId)}>新阶段对话继续</button>}</div></section>;
+            }
+            if (block.toolName === "plan_update" && block.status !== "error" && block.status !== "denied") return null;
+            const input = (block.input && typeof block.input === "object" ? block.input : {}) as Record<string, unknown>;
+            const label = block.toolName === "bash" ? presentPermission({toolName:block.toolName,input,riskLevel:"safe",description:""},"").title : toolLabel(block.toolName);
+            const target = [input.path, input.url, input.query, input.pattern, input.name].find(value => typeof value === "string") as string | undefined;
+            const status = {pending:message.streaming ? "准备执行" : "未取得结果",running:message.streaming ? "正在执行" : "未取得结果",success:"已完成",error:"执行失败",denied:"未执行"}[block.status];
+            return <details className={`inline-operation ${block.status}`} key={index}>
+              <summary><span>{block.status === "success" ? "✓" : block.status === "error" || block.status === "denied" ? "!" : "○"}</span><strong>{label}</strong><small>{status}</small>{target && <span className="operation-target">{target}</span>}</summary>
+              <p>操作参数</p><pre>{JSON.stringify(block.input,null,2)}</pre>
+              {block.result !== undefined && <><p>执行结果（保留工具原文）</p><pre>{block.result}</pre></>}
+            </details>;
+          }
           if (block.type === "error") return <div className="error-block" key={index}>{block.message}</div>;
           return null;
         })}
-        {message.streaming && message.content.length === 0 && <div className="typing"><i /><i /><i /></div>}
+        {message.streaming && !message.content.some(block => block.type === "plan") && <TaskPlan items={[]} running/>}
       </div>
     </article>
   );
@@ -1036,6 +1506,208 @@ function ActivityItem({ activity }: { activity: Activity }): JSX.Element {
   );
 }
 
+function AgentEngineCenter({
+  settings,
+  onClose,
+  onSave,
+}: {
+  settings: AllyCodeSettings;
+  onClose: () => void;
+  onSave: (settings: AllyCodeSettings) => Promise<void>;
+}): JSX.Element {
+  const [draft, setDraft] = useState(() => structuredClone(settings));
+  const [engines, setEngines] = useState<AgentEngineHealth[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function inspect(): Promise<void> {
+    setLoading(true);
+    setError("");
+    try {
+      setEngines(await window.allycode.inspectAgentEngines());
+    } catch (inspectionError) {
+      setError(localizeError(String(inspectionError)));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void inspect();
+  }, []);
+
+  async function submit(): Promise<void> {
+    setSaving(true);
+    setError("");
+    try {
+      await onSave(draft);
+    } catch (saveError) {
+      setError(localizeError(String(saveError)));
+      setSaving(false);
+    }
+  }
+
+  const selected = draft.agentEngine.mode;
+  return (
+    <div className="modal-backdrop">
+      <section className="engine-card">
+        <header>
+          <div><h2>Agent 引擎</h2><p>模型决定思考能力；Agent 引擎决定如何使用工具、沙箱、记忆与执行流程。</p></div>
+          <button aria-label="关闭" onClick={onClose}>×</button>
+        </header>
+        <div className="engine-mode-note">
+          <strong>推荐：自动（原生引擎）</strong>
+          <span>DeepSeek V4 等供应商 API 由原生引擎直接调用；Codex 使用自己的账号与模型配置。</span>
+        </div>
+        <label className={`engine-row ${selected === "auto" ? "selected" : ""}`}>
+          <input
+            type="radio"
+            name="engine"
+            checked={selected === "auto"}
+            onChange={() => setDraft({ ...draft, agentEngine: { ...draft.agentEngine, mode: "auto" } })}
+          />
+          <div><strong>自动选择</strong><p>当前固定选择已验证的 AllyCode 原生引擎，不会静默切换外部运行时。</p></div>
+          <span className="engine-state ready">推荐</span>
+        </label>
+        <div className="engine-list">
+          {engines.map((health) => (
+            <label className={`engine-row ${selected === health.engine.id ? "selected" : ""} ${health.selectable ? "" : "disabled"}`} key={health.engine.id}>
+              <input
+                type="radio"
+                name="engine"
+                checked={selected === health.engine.id}
+                disabled={!health.selectable}
+                onChange={() => setDraft({ ...draft, agentEngine: { ...draft.agentEngine, mode: health.engine.id } })}
+              />
+              <div>
+                <strong>{health.engine.name}<small>{maturityLabel(health.engine.maturity)}</small></strong>
+                <p>{health.engine.summary}</p>
+                <small>{health.detail}{health.version ? ` · ${health.version}` : ""}</small>
+              </div>
+              <span className={`engine-state ${health.state}`}>{engineHealthLabel(health.state)}</span>
+            </label>
+          ))}
+          {loading && <div className="engine-loading">正在检测本机运行时、版本与登录状态…</div>}
+        </div>
+        <label className="engine-fallback">
+          <span><strong>不可用时回退到原生引擎</strong><small>回退原因会写入检测台，不会无痕切换。</small></span>
+          <input
+            type="checkbox"
+            checked={draft.agentEngine.fallbackToNative}
+            onChange={(event) => setDraft({ ...draft, agentEngine: { ...draft.agentEngine, fallbackToNative: event.target.checked } })}
+          />
+        </label>
+        {error && <div className="settings-error">{error}</div>}
+        <footer>
+          <button onClick={() => void inspect()} disabled={loading}>{loading ? "检测中…" : "重新检测"}</button>
+          <div><button onClick={onClose}>取消</button><button className="primary" disabled={saving} onClick={() => void submit()}>{saving ? "保存中…" : "保存"}</button></div>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
+function BenchmarkLab({
+  workspace,
+  onClose,
+  onActivate,
+}: {
+  workspace: string;
+  onClose: () => void;
+  onActivate: (workspace: string) => Promise<void>;
+}): JSX.Element {
+  const [state, setState] = useState<BenchmarkLabState>();
+  const [report, setReport] = useState<BenchmarkRunReport>();
+  const [busy, setBusy] = useState<"loading" | "preparing" | "running">("loading");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void window.allycode.getBenchmarkLab(workspace || undefined)
+      .then((next) => {
+        setState(next);
+        setReport(next.latest);
+        setBusy("loading");
+      })
+      .catch((loadError) => {
+        setError(localizeError(String(loadError)));
+        setBusy("loading");
+      });
+  }, [workspace]);
+
+  async function prepare(): Promise<void> {
+    setBusy("preparing");
+    setError("");
+    try {
+      const result = await window.allycode.prepareBenchmarkWorkspace();
+      if (result.workspace) await onActivate(result.workspace);
+      if (!result.canceled && result.workspace) {
+        setState(await window.allycode.getBenchmarkLab(result.workspace));
+      }
+    } catch (prepareError) {
+      setError(localizeError(String(prepareError)));
+    } finally {
+      setBusy("loading");
+    }
+  }
+
+  async function run(): Promise<void> {
+    if (!workspace) return;
+    setBusy("running");
+    setError("");
+    try {
+      setReport(await window.allycode.runBenchmark(workspace));
+    } catch (runError) {
+      setError(localizeError(String(runError)));
+    } finally {
+      setBusy("loading");
+    }
+  }
+
+  const isLoading = !state;
+  return (
+    <div className="monitor-backdrop">
+      <section className="benchmark-card">
+        <header>
+          <div><span>ALPHA.11 · 独立证据</span><h2>评测实验室</h2><p>{state?.description ?? "正在读取固定挑战与验收器…"}</p></div>
+          <button aria-label="关闭" onClick={onClose}>×</button>
+        </header>
+        <div className="benchmark-layout">
+          <section>
+            <div className="benchmark-title"><div><strong>{state?.title ?? "Binary Market Protocol 工业级盲测"}</strong><small>真实需求改编 · 外部评分 · 可复跑</small></div><span>100 分</span></div>
+            <div className="benchmark-workspace">
+              <span>当前测试目录</span>
+              <strong>{workspace || "尚未创建评测项目"}</strong>
+              <p>创建时只复制需求与初始骨架；隐藏断言保留在 AllyCode 安装目录外部执行。</p>
+            </div>
+            <div className="benchmark-actions">
+              <button disabled={busy !== "loading"} onClick={() => void prepare()}>{busy === "preparing" ? "正在创建…" : "创建全新挑战项目"}</button>
+              <button className="primary" disabled={!workspace || busy !== "loading"} onClick={() => void run()}>{busy === "running" ? "验收运行中…" : "运行独立验收"}</button>
+            </div>
+            {error && <div className="settings-error">{error}</div>}
+            {isLoading && <div className="engine-loading">正在初始化评测实验室…</div>}
+            {report && (
+              <div className="benchmark-report">
+                <div className="benchmark-score"><strong>{report.score}</strong><span>/ {report.total}</span><small>{new Date(report.generatedAt).toLocaleString("zh-CN")}</small></div>
+                <div className="benchmark-results">
+                  {report.results.map((item) => (
+                    <div key={item.id}><span>{item.passed ? "✓" : "×"}</span><div><strong>{item.section} · {item.id}</strong><small>{item.detail}</small></div><b>{item.earned}/{item.points}</b></div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </section>
+          <aside>
+            <strong>评测纪律</strong>
+            {(state?.principles ?? []).map((principle, index) => <p key={principle}><span>{index + 1}</span>{principle}</p>)}
+            <div><strong>正确测试顺序</strong><small>创建挑战 → 在主会话运行固定提示词 → Agent 自主交付 → 运行独立验收 → 导出检测台报告。</small></div>
+          </aside>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function SettingsModal({
   settings,
   credentialStatus,
@@ -1058,11 +1730,25 @@ function SettingsModal({
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ProviderTestResult>();
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogResult | undefined>(() =>
+    fallbackCatalogForSettings(settings)
+  );
+  const [loadingModels, setLoadingModels] = useState(false);
+  const modelRequestSequence = useRef(0);
   const [error, setError] = useState("");
   const providers = Object.keys(PROVIDER_NAMES) as AllyCodeSettings["provider"][];
   const currentCredentialConfigured =
     credential.length > 0 ||
     Boolean(credentialStatus?.[draft.provider]);
+  const selectedCatalogModel = modelCatalog?.models.find((model) => model.id === draft.model);
+
+  useEffect(() => {
+    setModelCatalog(fallbackCatalogForSettings(draft));
+    setTestResult(undefined);
+    return () => { modelRequestSequence.current += 1; };
+    // Network discovery is explicit: it may consume credentials and should not
+    // fire merely because a settings dialog was opened or a key was typed.
+  }, [draft.provider]);
 
   async function submitSettings(): Promise<void> {
     setSaving(true);
@@ -1092,6 +1778,24 @@ function SettingsModal({
     }
   }
 
+  async function refreshModels(): Promise<void> {
+    const sequence = ++modelRequestSequence.current;
+    setLoadingModels(true);
+    try {
+      const candidate = structuredClone(draft);
+      if (credential) setProviderCredential(candidate, credential);
+      const catalog = await window.allycode.listProviderModels(candidate);
+      if (sequence === modelRequestSequence.current) setModelCatalog(catalog);
+    } catch (catalogError) {
+      if (sequence === modelRequestSequence.current) {
+        setModelCatalog(undefined);
+        setError(localizeError(String(catalogError)));
+      }
+    } finally {
+      if (sequence === modelRequestSequence.current) setLoadingModels(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop">
       <form className="settings-card" onSubmit={(event) => {
@@ -1107,6 +1811,7 @@ function SettingsModal({
               ? "当前供应商已配置，可直接开始任务"
               : "当前供应商尚未配置 API 密钥"}
         </div>
+        <VisionPanel />
         <label>模型供应商
           <select
             value={draft.provider}
@@ -1114,10 +1819,12 @@ function SettingsModal({
               const provider = event.target.value as AllyCodeSettings["provider"];
               setCredential("");
               setTestResult(undefined);
+              setModelCatalog(undefined);
               setDraft({
                 ...draft,
                 provider,
                 model: DEFAULT_MODELS[provider],
+                providerProtocol: "auto",
               });
             }}
           >
@@ -1126,14 +1833,105 @@ function SettingsModal({
             ))}
           </select>
         </label>
-        <label>模型名称
+        <label>
+          <span className="settings-label-heading">
+            <span>模型名称</span>
+            <button
+              type="button"
+              disabled={loadingModels}
+              onClick={() => void refreshModels()}
+            >{loadingModels ? "读取中…" : "刷新模型列表"}</button>
+          </span>
           <input
+            list="allycode-provider-models"
             value={draft.model}
             placeholder="输入该供应商支持的模型名称"
-            onChange={(event) => setDraft({ ...draft, model: event.target.value })}
+            onChange={(event) => {
+              setTestResult(undefined);
+              setDraft({ ...draft, model: event.target.value });
+            }}
           />
+          <datalist id="allycode-provider-models">
+            {modelCatalog?.models.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.verification === "official"
+                  ? "官方能力已登记"
+                  : model.source === "live"
+                    ? "当前账户可见，能力待测试"
+                    : "本地候选，尚未确认"}
+              </option>
+            ))}
+          </datalist>
+          {modelCatalog?.warning && <small className="model-catalog-warning">{modelCatalog.warning}</small>}
+          {selectedCatalogModel && (
+            <small className="model-capability-note">
+              {modelCapabilitySummary(selectedCatalogModel)}
+            </small>
+          )}
           {testResult?.fieldErrors.model && <small className="field-error">{testResult.fieldErrors.model}</small>}
         </label>
+        <label>API 传输协议
+          <select
+            value={draft.providerProtocol}
+            onChange={(event) => {
+              setTestResult(undefined);
+              setDraft({
+                ...draft,
+                providerProtocol: event.target.value as AllyCodeSettings["providerProtocol"],
+              });
+            }}
+          >
+            {protocolOptionsForProvider(draft.provider).map((protocol) => (
+              <option key={protocol} value={protocol}>{PROTOCOL_NAMES[protocol]}</option>
+            ))}
+          </select>
+          <small>{protocolHelp(draft.provider, draft.providerProtocol)}</small>
+        </label>
+        {(draft.provider === "deepseek" || draft.provider === "openai" || draft.provider === "custom") && (
+          <div className="settings-inline-grid">
+            <label>思考模式
+              <select
+                value={draft.reasoning.mode}
+                onChange={(event) => {
+                  setTestResult(undefined);
+                  setDraft({
+                    ...draft,
+                    reasoning: {
+                      ...draft.reasoning,
+                      mode: event.target.value as AllyCodeSettings["reasoning"]["mode"],
+                    },
+                  });
+                }}
+              >
+                <option value="auto">自动（推荐）</option>
+                <option value="enabled">开启</option>
+                <option value="disabled">关闭</option>
+              </select>
+            </label>
+            <label>思考强度
+              <select
+                value={draft.reasoning.effort}
+                onChange={(event) => {
+                  setTestResult(undefined);
+                  setDraft({
+                    ...draft,
+                    reasoning: {
+                      ...draft.reasoning,
+                      effort: event.target.value as AllyCodeSettings["reasoning"]["effort"],
+                    },
+                  });
+                }}
+              >
+                <option value="auto">自动（推荐）</option>
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+                <option value="max">最高</option>
+                {draft.provider === "openai" && <option value="xhigh">超高</option>}
+              </select>
+            </label>
+          </div>
+        )}
         {draft.provider !== "ollama" && (
           <label>{draft.provider === "custom" ? "端点 API 密钥（可选）" : "API 密钥"}
             <input
@@ -1141,7 +1939,11 @@ function SettingsModal({
               autoComplete="off"
               value={credential}
               placeholder={currentCredentialConfigured ? "已安全保存；留空则保持不变" : "请输入 API 密钥"}
-              onChange={(event) => setCredential(event.target.value)}
+              onChange={(event) => {
+                setCredential(event.target.value);
+                setTestResult(undefined);
+                setModelCatalog(undefined);
+              }}
             />
             {testResult?.fieldErrors.credential && <small className="field-error">{testResult.fieldErrors.credential}</small>}
           </label>
@@ -1151,7 +1953,11 @@ function SettingsModal({
             <input
               value={draft.customProviderUrl ?? ""}
               placeholder="https://example.com/v1"
-              onChange={(event) => setDraft({ ...draft, customProviderUrl: event.target.value })}
+              onChange={(event) => {
+                setTestResult(undefined);
+                setModelCatalog(undefined);
+                setDraft({ ...draft, customProviderUrl: event.target.value });
+              }}
             />
             {testResult?.fieldErrors.baseUrl && <small className="field-error">{testResult.fieldErrors.baseUrl}</small>}
           </label>
@@ -1165,6 +1971,8 @@ function SettingsModal({
                 const providerBaseUrls = { ...draft.providerBaseUrls };
                 if (event.target.value) providerBaseUrls[draft.provider] = event.target.value;
                 else delete providerBaseUrls[draft.provider];
+                setTestResult(undefined);
+                setModelCatalog(undefined);
                 setDraft({ ...draft, providerBaseUrls });
               }}
             />
@@ -1172,8 +1980,24 @@ function SettingsModal({
           </label>
         )}
         <label>最大输出 Token 数
-          <input type="number" min={1024} max={128000} value={draft.maxTokens} onChange={(event) => setDraft({ ...draft, maxTokens: Number(event.target.value) })} />
+          <input type="number" min={1024} max={384000} value={draft.maxTokens} onChange={(event) => setDraft({ ...draft, maxTokens: Number(event.target.value) })} />
         </label>
+        <label>每阶段模型轮次上限
+          <input type="number" min={1} max={200} value={draft.executionBudget.maxModelTurnsPerRun} onChange={(event) => setDraft({ ...draft, executionBudget: { ...draft.executionBudget, maxModelTurnsPerRun: Number(event.target.value) } })} />
+          <small>达到上限保存进度；在原任务继续下一阶段，保留历史与计划。</small>
+        </label>
+        <label>每阶段工具调用上限
+          <input type="number" min={1} max={2000} value={draft.executionBudget.maxToolCallsPerRun} onChange={(event) => setDraft({ ...draft, executionBudget: { ...draft.executionBudget, maxToolCallsPerRun: Number(event.target.value) } })} />
+        </label>
+        <label className="toggle-row">
+          <span><strong>启用任务累计预算</strong><small>默认关闭，长任务可以分阶段持续推进；费用统计仍累计保存。</small></span>
+          <input type="checkbox" checked={draft.executionBudget.enforceTaskLimits} onChange={(event) => setDraft({ ...draft, executionBudget: { ...draft.executionBudget, enforceTaskLimits: event.target.checked } })} />
+        </label>
+        {draft.executionBudget.enforceTaskLimits && <><label>任务累计模型轮次上限
+          <input type="number" min={1} max={500} value={draft.executionBudget.maxModelTurnsPerTask} onChange={(event) => setDraft({ ...draft, executionBudget: { ...draft.executionBudget, maxModelTurnsPerTask: Number(event.target.value) } })} />
+        </label><label>任务累计工具调用上限
+          <input type="number" min={1} max={2000} value={draft.executionBudget.maxToolCallsPerTask} onChange={(event) => setDraft({ ...draft, executionBudget: { ...draft.executionBudget, maxToolCallsPerTask: Number(event.target.value) } })} />
+        </label></>}
         <label className="toggle-row">
           <span><strong>Docker 沙箱</strong><small>在隔离容器中执行终端命令</small></span>
           <input type="checkbox" checked={draft.sandbox.enabled} onChange={(event) => setDraft({ ...draft, sandbox: { ...draft.sandbox, enabled: event.target.checked } })} />
@@ -1181,7 +2005,7 @@ function SettingsModal({
         <section className="update-settings">
           <div>
             <strong>软件更新</strong>
-            <small>当前版本 {updateState?.currentVersion ?? "0.10.0-alpha.8"} · 国内主源与备用源</small>
+            <small>当前版本 {updateState?.currentVersion ?? "0.11.0-alpha.5"} · 国内主源与备用源</small>
           </div>
           <p>{updateState?.message ?? "可手动检查新版本；不会在后台自动下载。"}</p>
           {updateState?.status === "downloading" && (
@@ -1210,6 +2034,10 @@ function SettingsModal({
         {testResult && (
           <div className={`provider-test-result ${testResult.ok ? "passed" : "failed"}`}>
             <strong>{testResult.ok ? "兼容性测试通过" : "兼容性测试未通过"}</strong>
+            <p>
+              能力等级：{capabilityLevelLabel(testResult.capability.level)} ·
+              协议：{PROTOCOL_NAMES[testResult.capability.protocol] ?? "未知"}
+            </p>
             {testResult.stages.map((stage) => (
               <div key={stage.stage}>
                 <span>{stage.ok ? "✓" : "×"}</span>
@@ -1236,9 +2064,13 @@ function SettingsModal({
 function FirstRunWizard({
   settings,
   onComplete,
+  onAccount,
+  onSetup,
 }: {
   settings: AllyCodeSettings;
   onComplete: (settings: AllyCodeSettings) => Promise<void>;
+  onAccount:()=>void;
+  onSetup:()=>void;
 }): JSX.Element {
   const domesticProviders = ["deepseek", "qwen", "moonshot"] as const;
   const initialProvider = domesticProviders.includes(settings.provider as typeof domesticProviders[number])
@@ -1293,28 +2125,34 @@ function FirstRunWizard({
         {step === 1 && (
           <>
             <h1>选择一个国内模型服务</h1>
-            <p>无需配置开发环境。只需从模型厂商申请 API 密钥，即可开始使用。</p>
+            <p>先连接模型即可开始。文档与视觉组件可通过“开始设置”自动检测和安装。</p>
+            <div className="modal-actions"><button onClick={onAccount}>邮箱注册／登录</button><button onClick={onSetup}>检测这台电脑</button></div>
             <div className="provider-choice-grid">
               {domesticProviders.map((provider) => (
                 <button
                   type="button"
                   className={draft.provider === provider ? "selected" : ""}
                   key={provider}
-                  onClick={() => setDraft({ ...draft, provider, model: DEFAULT_MODELS[provider] })}
+                  onClick={() => setDraft({
+                    ...draft,
+                    provider,
+                    model: DEFAULT_MODELS[provider],
+                    providerProtocol: "auto",
+                  })}
                 >
                   <strong>{providerLabel(provider)}</strong>
-                  <small>{provider === "deepseek" ? "默认推荐，接入简单" : provider === "qwen" ? "阿里云百炼模型服务" : "月之暗面 Kimi API"}</small>
+                  <small>{provider === "deepseek" ? "默认使用 DeepSeek V4 Pro，支持完整 Agent 工具续接" : provider === "qwen" ? "阿里云百炼模型服务" : "月之暗面 Kimi API"}</small>
                 </button>
               ))}
             </div>
-            <div className="modal-actions"><button className="primary" onClick={() => setStep(2)}>下一步</button></div>
+            <div className="modal-actions"><button onClick={()=>void onComplete({...settings,onboarding:{...settings.onboarding,completed:true,completedAt:new Date().toISOString()}}).catch(e=>setError(String(e)))}>先进入工作区，稍后配置</button><button className="primary" onClick={() => setStep(2)}>下一步</button></div>
           </>
         )}
 
         {step === 2 && (
           <>
             <h1>配置 {providerLabel(draft.provider)} API 密钥</h1>
-            <p>密钥只会使用 Windows 系统加密保存在本机，界面和配置文件都不会读取到明文。</p>
+            <p>密钥使用操作系统安全密钥库保存在本机。Linux 需启用 GNOME Keyring 或兼容密钥库；验证连接会调用所选模型，可能产生少量费用。</p>
             <label>API 密钥
               <input
                 autoFocus
@@ -1416,6 +2254,33 @@ function formatElapsed(seconds: number): string {
   return `${minutes} 分 ${seconds % 60} 秒`;
 }
 
+function engineModeLabel(mode: AgentEngineMode): string {
+  return {
+    auto: "自动 · 原生",
+    native: "AllyCode 原生",
+    codex: "Codex",
+    "deepseek-harness": "DeepSeek Harness",
+  }[mode];
+}
+
+function engineHealthLabel(state: AgentEngineHealth["state"]): string {
+  return {
+    ready: "可用",
+    not_installed: "未安装",
+    needs_auth: "需要登录",
+    incompatible: "协议待适配",
+    unavailable: "不可用",
+  }[state];
+}
+
+function maturityLabel(maturity: AgentEngineHealth["engine"]["maturity"]): string {
+  return {
+    stable: "稳定",
+    beta: "测试版",
+    "developer-preview": "开发预览",
+  }[maturity];
+}
+
 const PROVIDER_NAMES: Record<AllyCodeSettings["provider"], string> = {
   deepseek: "DeepSeek（国内推荐）",
   qwen: "阿里云通义千问 / Qwen（国内）",
@@ -1432,15 +2297,102 @@ const PROVIDER_NAMES: Record<AllyCodeSettings["provider"], string> = {
 const DEFAULT_MODELS: Record<AllyCodeSettings["provider"], string> = {
   anthropic: "claude-sonnet-4-6",
   openai: "gpt-4o",
-  deepseek: "deepseek-chat",
+  deepseek: "deepseek-v4-pro",
   qwen: "qwen3-coder-plus",
   groq: "llama-3.3-70b-versatile",
   gemini: "gemini-2.0-flash",
   ollama: "qwen2.5-coder:7b",
   openrouter: "anthropic/claude-sonnet-4",
-  moonshot: "moonshot-v1-32k",
+  moonshot: "kimi-k3",
   custom: "gpt-4o",
 };
+
+const PROTOCOL_NAMES: Record<AllyCodeSettings["providerProtocol"] | "unknown", string> = {
+  auto: "自动选择（推荐）",
+  anthropic: "Anthropic Messages",
+  chat_completions: "Chat Completions",
+  responses: "Responses API",
+  unknown: "未知",
+};
+
+function protocolOptionsForProvider(
+  provider: AllyCodeSettings["provider"],
+): AllyCodeSettings["providerProtocol"][] {
+  if (provider === "anthropic") return ["auto", "anthropic"];
+  if (provider === "openai" || provider === "custom") {
+    return ["auto", "responses", "chat_completions"];
+  }
+  return ["auto", "chat_completions"];
+}
+
+function protocolHelp(
+  provider: AllyCodeSettings["provider"],
+  protocol: AllyCodeSettings["providerProtocol"],
+): string {
+  if (provider === "deepseek") {
+    return "DeepSeek V4 官方直连使用 Chat Completions；工具调用后的思考状态会原样续接。";
+  }
+  if (provider === "openai" && protocol === "auto") {
+    return "OpenAI 自动使用 Responses API，并以无状态方式续传推理与工具调用项。";
+  }
+  if (provider === "custom") {
+    return "请选择该网关真实实现的协议；错误协议不会自动伪装兼容。";
+  }
+  return "自动模式只选择 AllyCode 已实现并验证过的供应商协议。";
+}
+
+function capabilityLevelLabel(level: ProviderTestResult["capability"]["level"]): string {
+  return {
+    unavailable: "不可用",
+    chat_only: "仅基础对话",
+    tool_call_only: "仅首轮工具调用",
+    agent_ready: "Agent 两轮验证通过",
+  }[level];
+}
+
+function modelCapabilitySummary(
+  model: ModelCatalogResult["models"][number],
+): string {
+  if (model.verification !== "official") {
+    return model.source === "live"
+      ? "该模型已由供应商列表返回，但工具、思考与视觉能力尚未验证；请运行下方兼容性测试。"
+      : "该模型来自内置或手工候选，当前账户可用性及 Agent 能力尚未验证。";
+  }
+  const context = model.capabilities.contextWindow
+    ? `${Math.round(model.capabilities.contextWindow / 1_000_000)}M 上下文`
+    : "上下文规格未登记";
+  const output = model.capabilities.maxOutputTokens
+    ? `最高 ${Math.round(model.capabilities.maxOutputTokens / 1_000)}K 输出`
+    : "输出上限未登记";
+  return `官方能力登记：${context} · ${output} · 原生工具调用 · 思考模式；是否可用于当前账户仍以两轮实测为准。`;
+}
+
+function fallbackCatalogForSettings(settings: AllyCodeSettings): ModelCatalogResult | undefined {
+  if (settings.provider !== "deepseek") return undefined;
+  return {
+    provider: "deepseek",
+    retrieval: "fallback",
+    fetchedAt: new Date().toISOString(),
+    models: ["deepseek-v4-flash", "deepseek-v4-pro"].map((id) => ({
+      id,
+      provider: "deepseek" as const,
+      source: "fallback" as const,
+      verification: "official" as const,
+      protocols: ["chat_completions" as const, "anthropic" as const],
+      capabilities: {
+        protocol: "chat_completions" as const,
+        streaming: true,
+        toolCalls: "native" as const,
+        reasoning: "supported" as const,
+        vision: "unverified" as const,
+        contextWindow: 1_000_000,
+        maxOutputTokens: 384_000,
+        source: "official" as const,
+        notes: [],
+      },
+    })),
+  };
+}
 
 const PROVIDER_BASE_URLS: Partial<Record<AllyCodeSettings["provider"], string>> = {
   anthropic: "https://api.anthropic.com",
@@ -1455,9 +2407,10 @@ const PROVIDER_BASE_URLS: Partial<Record<AllyCodeSettings["provider"], string>> 
 };
 
 function providerStageLabel(stage: ProviderTestResult["stages"][number]["stage"]): string {
+  if (stage === "tool_result_roundtrip") return "工具结果续接";
   return {
     configuration: "配置",
-    connectivity: "网络连通",
+    model_discovery: "模型发现",
     chat: "基础对话",
     tool_call: "工具调用",
   }[stage];
@@ -1485,30 +2438,36 @@ function toolLabel(name: string): string {
     web_search: "搜索网络",
     git_commit: "提交 Git 变更",
     spawn_research: "执行深度研究",
+    plan_update: "更新任务计划",
+    sources_to_excel: "整理资料并生成 Excel",
+    document_ocr: "本地识别图片与扫描件",
+    document_format: "按规范生成和转换 Word/PDF",
+    document_verify: "校验 Word 格式与关键内容",
+    vision_analyze: "本地视觉理解与资料识别",
+    phase_checkpoint: "保存阶段与等待确认",
+    verification_status: "核对工程验证证据",
+    browser_verify: "验证浏览器页面",
+    service_start: "启动项目服务",
+    service_stop: "停止项目服务",
+    service_status: "检查服务状态",
+    desktop_control: "操作桌面应用",
   };
   return labels[name] ?? name;
 }
 
-function riskLabel(level: PermissionRequest["riskLevel"]): string {
-  if (level === "safe") return "低风险";
-  if (level === "moderate") return "中等风险";
-  return "高风险";
-}
-
-function permissionReason(request: PermissionRequest): string {
-  if (["web_fetch", "web_search", "spawn_research"].includes(request.toolName)) {
-    return "此操作将访问网络或外部服务，因此需要你的确认。";
-  }
-  if (["file_write", "file_edit"].includes(request.toolName)) {
-    return "此操作将修改项目文件。你可以仅允许一次，或允许本次会话中的同类修改。";
-  }
-  if (request.riskLevel === "dangerous") {
-    return "系统检测到高风险或不可逆操作，不会自动放行。";
-  }
-  return "此操作可能改变项目状态或执行较大的命令，需要你的确认。";
-}
-
 function localizeError(message: string): string {
+  if (/\b402\b|insufficient balance/i.test(message)) {
+    return "模型 API 账户余额不足。密钥已经连接成功，但供应商拒绝继续计费；请充值或更换有余额的 API Key 后重试。";
+  }
+  if (/\b401\b|invalid api key|unauthorized/i.test(message)) {
+    return "模型 API 密钥无效或已失效。请打开“模型与 API”重新检查密钥。";
+  }
+  if (/\b403\b|forbidden/i.test(message)) {
+    return "当前 API 账户没有调用该模型或接口的权限，请检查供应商控制台中的模型权限。";
+  }
+  if (/\b429\b|rate limit/i.test(message)) {
+    return "模型 API 已达到速率或额度限制，请稍后重试或检查供应商限额。";
+  }
   if (/API key not set/i.test(message)) {
     return "当前模型供应商尚未配置 API 密钥。请打开“模型与 API”完成配置。";
   }

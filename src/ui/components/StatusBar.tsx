@@ -169,9 +169,9 @@ export function StatusBar({
           )}
 
           {/* Estimated cost */}
-          {showCost && info.estimatedCostUsd > 0 && (
+          {showCost && info.estimatedCost !== null && info.estimatedCost > 0 && (
             <Text color={palette.secondary} dimColor>
-              {formatCost(info.estimatedCostUsd)}
+              {formatCost(info.estimatedCost, info.costCurrency)}
             </Text>
           )}
 

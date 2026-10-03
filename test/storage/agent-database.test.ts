@@ -79,6 +79,21 @@ describe("AgentDatabase", () => {
     fixture.database.close();
   });
 
+  it("reports the complete compact monitor stream while excluding raw deltas", async () => {
+    const fixture = await createFixture();
+    const project = fixture.database.resolveProject(fixture.firstProject);
+    const task = fixture.database.createTask({ projectId: project.id, title: "监控", goal: "验证监控完整性" });
+    for (let index = 0; index < 2_100; index++) {
+      fixture.database.appendEvent(task.id, "agent_usage", { inputTokens: index });
+    }
+    fixture.database.appendEvent(task.id, "agent_text_delta", { delta: "private stream chunk" });
+
+    expect(fixture.database.countEvents(task.id)).toBe(2_102);
+    expect(fixture.database.listMonitorEvents(task.id)).toHaveLength(2_101);
+    expect(fixture.database.listMonitorEvents(task.id).some((item) => item.eventType === "agent_text_delta")).toBe(false);
+    fixture.database.close();
+  });
+
   it("turns interrupted active tasks into resumable paused tasks", async () => {
     const fixture = await createFixture();
     const project = fixture.database.resolveProject(fixture.firstProject);

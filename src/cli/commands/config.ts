@@ -15,7 +15,7 @@ const PROVIDERS: Array<{
   { provider: "gemini", model: "gemini-2.5-pro", label: "Google Gemini" },
   { provider: "openrouter", model: "anthropic/claude-sonnet-4", label: "OpenRouter" },
   { provider: "ollama", model: "qwen2.5-coder:7b", label: "Ollama / local" },
-  { provider: "moonshot", model: "kimi-k2", label: "Moonshot / Kimi" },
+  { provider: "moonshot", model: "kimi-k3", label: "Moonshot / Kimi" },
   { provider: "custom", model: "custom-model", label: "Custom OpenAI-compatible" },
 ];
 
@@ -125,7 +125,7 @@ export function configCommand(): Command {
 
   cmd
     .command("test")
-    .description("Run real provider connectivity, chat, and tool-call checks")
+    .description("Run real model discovery, chat, tool-call, and continuation checks")
     .option("-p, --provider <provider>", "Provider name")
     .option("-m, --model <model>", "Free-form model identifier")
     .option("--json", "Print machine-readable JSON")

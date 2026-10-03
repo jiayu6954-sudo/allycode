@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "plain_excel_table",
+  "description": "将普通 xlsx 转为白底黑字表格；compact 显式裁剪纯数据区域。",
+  "type": "object", "additionalProperties": false,
+  "required": ["input", "output"],
+  "properties": {
+    "input": {"type": "string", "minLength": 1},
+    "output": {"type": "string", "minLength": 1},
+    "template": {"type": "string", "minLength": 1},
+    "template_sheet": {"type": "string"},
+    "template_header_row": {"type": "integer", "minimum": 1},
+    "template_body_row": {"type": "integer", "minimum": 1},
+    "mode": {"enum": ["preserve", "compact"], "default": "preserve"},
+    "headers": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
+    "ranges": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[A-Z]+[1-9][0-9]*:[A-Z]+[1-9][0-9]*$"}},
+    "acknowledge_crop": {"type": "boolean", "default": false},
+    "layout": {"enum": ["preserve", "readable"], "default": "preserve"},
+    "font": {"type": "string", "minLength": 1},
+    "font_size": {"type": "number", "minimum": 6, "maximum": 32},
+    "header_bold": {"type": "boolean"},
+    "header_border": {"type": "boolean"},
+    "overwrite": {"type": "boolean", "default": false}
+  }
+}

@@ -4,6 +4,14 @@ import { classifyRisk } from "../src/permissions/classifier.js";
 import { PermissionManager } from "../src/permissions/manager.js";
 
 describe("smart permission policy", () => {
+  it("publishes the agent checklist automatically without granting permission to execute its steps",async()=>{
+    const prompt=vi.fn(async()=>"deny" as const);
+    const manager=new PermissionManager(SettingsSchema.parse({defaultPermissions:{plan_update:"ask"},customRules:[{tool:"*",level:"ask"}]}),prompt,false);
+    await expect(manager.request("plan_update",{items:[{step:"检查项目并拆解任务",status:"in_progress"}]})).resolves.toBe("allow");
+    expect(prompt).not.toHaveBeenCalled();
+    await expect(manager.request("bash",{command:"npm install"})).resolves.toBe("deny");
+    expect(prompt).toHaveBeenCalledTimes(1);
+  });
   it.each([
     ["rg --files", "safe"],
     ["Get-ChildItem -Recurse | Select-String TODO", "safe"],
@@ -54,6 +62,20 @@ describe("smart permission policy", () => {
     await expect(manager.request("file_edit", { path: "a.ts" })).resolves.toBe("allow");
     await expect(manager.request("file_edit", { path: "b.ts" })).resolves.toBe("allow");
     expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps task-scoped allowances across pause and resume managers", async () => {
+    const shared = new Set<string>();
+    const firstPrompt = vi.fn(async () => "allow-session" as const);
+    const resumedPrompt = vi.fn(async () => "deny" as const);
+
+    const firstRun = new PermissionManager(SettingsSchema.parse({}), firstPrompt, false, shared);
+    await expect(firstRun.request("file_write", { path: "first.ts" })).resolves.toBe("allow");
+
+    const resumedRun = new PermissionManager(SettingsSchema.parse({}), resumedPrompt, false, shared);
+    await expect(resumedRun.request("file_write", { path: "second.ts" })).resolves.toBe("allow");
+    expect(firstPrompt).toHaveBeenCalledTimes(1);
+    expect(resumedPrompt).not.toHaveBeenCalled();
   });
 
   it("never reuses a session allowance for dangerous commands", async () => {

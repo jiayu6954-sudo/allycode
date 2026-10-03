@@ -1,5 +1,6 @@
-﻿import fs from "node:fs/promises";
+import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { logger } from "../utils/logger.js";
 import { DATA_DIR } from "../config/settings.js";
 
@@ -28,6 +29,8 @@ export async function loadClaudeMd(
     gitRoot ? path.join(gitRoot, CLAUDE_MD_FILENAME) : null,
     path.join(cwd, ".claude", CLAUDE_MD_FILENAME),
     path.join(cwd, CLAUDE_MD_FILENAME),
+    gitRoot ? path.join(gitRoot, "AGENTS.md") : null,
+    path.join(cwd, "AGENTS.md"),
     ...extraPaths,
   ].filter((p): p is string => p !== null);
 
@@ -50,7 +53,7 @@ export async function loadClaudeMd(
       }
       const content = await fs.readFile(filePath, "utf-8");
       if (content.trim()) {
-        contents.push(`<!-- Context from: ${filePath} -->\n${content.trim()}`);
+        contents.push(`<!-- Context from: ${filePath}; SHA256: ${createHash("sha256").update(content).digest("hex")} -->\n${content.trim()}`);
         logger.debug("claude_md.loaded", { path: filePath });
       }
     } catch {

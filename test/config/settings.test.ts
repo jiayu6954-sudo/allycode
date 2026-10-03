@@ -41,4 +41,12 @@ describe("provider settings persistence", () => {
       expect(reloaded.providerBaseUrls[provider]).toBe(`https://${provider}.gateway.example/v1`);
     }
   });
+
+  it("persists the canonical lowercase DeepSeek V4 model id", async () => {
+    await saveSettings({ provider: "deepseek", model: "DeepSeek-V4-Pro" });
+    await expect(loadSettings()).resolves.toMatchObject({
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+    });
+  });
 });
