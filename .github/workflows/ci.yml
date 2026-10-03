@@ -23,6 +23,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
+    env:
+      ALLYCODE_DOCUMENT_HOME: ${{ github.workspace }}/.tmp/ci-documents
 
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +38,10 @@ jobs:
       - name: Install dependencies
         run: npm ci --include=dev --ignore-scripts
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install document regression dependencies
         run: python -m pip install -r skill/sources-to-excel-complete/sources-to-excel/linux-requirements.txt
 
@@ -46,6 +52,16 @@ jobs:
       - name: Install modern formula engine (Linux)
         if: runner.os == 'Linux'
         run: npx tsx scripts/setup-formula-tests.ts
+
+      - name: Download pinned Windows formula engine from HTTPS mirror
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:ALLYCODE_DOCUMENT_HOME 'downloads/LibreOffice_26.2.6_Win_x86-64.msi'
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $archive) | Out-Null
+          curl.exe --fail --location --silent --show-error --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 600 --retry 2 --output $archive 'https://mirrors.ibiblio.org/libreoffice/stable/26.2.6/win/x86_64/LibreOffice_26.2.6_Win_x86-64.msi'
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned formula engine download failed' }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'f9877032fd908beb9c0ddf06df4af5c2e85f419c42e14876c4cce5aae5fb2660') { throw 'Formula engine SHA256 mismatch' }
 
       - name: Install verified local formula engine (Windows)
         if: runner.os == 'Windows'

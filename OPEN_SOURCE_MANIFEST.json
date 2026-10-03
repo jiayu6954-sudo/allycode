@@ -42,8 +42,8 @@
     },
     {
       "path": ".github/workflows/ci.yml",
-      "bytes": 2345,
-      "sha256": "54d6199182394555e59afc33c4b75d947061dc879a05e4047362c1a3f4cf7b14"
+      "bytes": 3409,
+      "sha256": "6faf1d9dac031e37ca19adcda5b1652f2def9aec2f55ba5fdeb1b348228573f6"
     },
     {
       "path": ".gitignore",
@@ -437,8 +437,8 @@
     },
     {
       "path": "docs/PUBLIC_RELEASE.md",
-      "bytes": 4903,
-      "sha256": "b77d278027506fc67a837481f98c70c5d00dcef15c5188c02b5f960824668686"
+      "bytes": 5452,
+      "sha256": "47a14e08d089da40fcab824af6ddf51e3b41b0cd781f4dbe44385fff22580376"
     },
     {
       "path": "electron-builder.release.yml",

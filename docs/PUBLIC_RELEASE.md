@@ -52,3 +52,7 @@
 从导出的公开文件重新 `npm ci --include=dev --ignore-scripts`，未借用开发目录的 node_modules。在 Windows / Node.js 24.13.0 环境验证：443 项测试中 442 通过、1 项 Linux 专项跳过、0 失败；CLI/桌面类型检查、Lint、CLI/桌面构建及独立账号服务构建通过。办公测试复用了预先准备的本机办公组件，未宣称重新下载这些外部组件。
 
 首次在受限沙箱中测试曾因临时目录、浏览器与子进程权限失败；在正常系统权限下完整复测通过。上述结果是本地公开快照检查；远端 CI 与 Linux 复跑结果以 GitHub Actions 实际记录为准。
+
+### GitHub 干净环境的后续修正
+
+首轮远端 CI（提交 590533f）暴露：办公组件准备目录与隔离测试的 DATA_DIR 不同，Linux 测试找不到已安装组件；Windows 访问办公组件主下载站超时。后续 CI 固定独立 `ALLYCODE_DOCUMENT_HOME`、Python 3.12，并从 HTTPS 镜像下载同一 Windows 安装包且验证原有 SHA-256。未跳过办公测试、未放宽公式预期值，安全审计仍独立报告。源码预发布标签保留原提交；CI 后续修正以 main 分支和 Actions 记录为准。
