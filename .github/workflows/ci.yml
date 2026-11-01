@@ -38,7 +38,7 @@ jobs:
       - name: Install dependencies
         run: npm ci --include=dev --ignore-scripts
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
